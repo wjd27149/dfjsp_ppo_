@@ -22,13 +22,18 @@ import time
 
 import simpy
 from torch.distributions import MultivariateNormal
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#print(f"Using device: {device}")
+
+#Init CUDA
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 class Sequencing_brain:
     def __init__(self, span, *args, **kwargs):
+
+        # 2. Init Multi-Channel
         self.build_state = self.state_multi_channel      
         print("---> Multi-Channel (MC) mode ON <---")
+
         self.span = span
         self.input_size = 25
         # list that contains available rules, and use SPT for the first phase of warmup
@@ -57,10 +62,11 @@ class Sequencing_brain:
         # self.critic_optim = optim.Adam(self.critic.network.parameters(), lr=self.lr)
 
         # Initialize actor and critic networks
-        self.actor = ActorNetwork(self.input_size, self.output_size)                                                   # ALG STEP 1
-        self.critic = CriticNetwork(self.input_size, 1)
+        self.actor = ActorNetwork(self.input_size, self.output_size).to(device)                                                   # ALG STEP 1
+        self.critic = CriticNetwork(self.input_size, 1).to(device)
 
         # Initialize optimizers for actor and critic
+        # actor, critic网络已经移动到GPU上后，才可以建立optim
         self.lr = 0.0005
         self.actor_optim = optim.Adam(self.actor.parameters(), lr=self.lr)
         self.critic_optim = optim.Adam(self.critic.parameters(), lr=self.lr)
@@ -192,6 +198,11 @@ class Sequencing_brain:
             advantages: 形状与输入相同的优势值
             returns: 形状与输入相同的回报值
         """
+        # 将输入移动到GPU计算
+        rewards = rewards.to(device)
+        values = values.to(device)
+        next_values = next_values.to(device)
+
         # 确保输入是一维的
         rewards = rewards.squeeze(-1) if rewards.dim() > 1 else rewards
         values = values.squeeze(-1) if values.dim() > 1 else values
@@ -313,6 +324,9 @@ class Sequencing_brain:
         
         # 将状态转换为适合网络的格式
         state_tensor = s_t.reshape([1,1,self.input_size]) # shape: [1, state_dim]
+
+        # 将状态tensor移动到GPU上和模型网络在同一个设备计算
+        state_tensor = state_tensor.to(device)
         
         # 使用 actor 网络生成动作分布
         with torch.no_grad():
@@ -431,8 +445,11 @@ if __name__ == '__main__':
 
     total_episode = 5
     span = 1000
+
     sequencing_brain = Sequencing_brain(span= span)
     sequencing_brain.train(total_steps = total_episode)
+
+
     # print(sequencing_brain.tard)
     # plot_loss(sequencing_brain.tard)
     # plot_loss(sequencing_brain.actor_losses)
