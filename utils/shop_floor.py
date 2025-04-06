@@ -5,12 +5,8 @@ import job_creation
 
 from tools import get_group_index
 
-"""
-THIS IS THE MODULE FOR TRAINING
-"""
-
 class shopfloor:
-    def __init__(self, env, span, m_no, wc_no, m_per_wc, **kwargs):
+    def __init__(self, env, span, m_no, wc_no, m_per_wc, tightness,  add_job, **kwargs):
         '''STEP 1: create environment instances and specifiy simulation span '''
         self.env=env
         self.span = span
@@ -40,15 +36,17 @@ class shopfloor:
         '''STEP 3: initialize the job creator'''
         # env, span, machine_list, workcenter_list, number_of_jobs, pt_range, due_tightness, E_utliz
         self.job_creator = job_creation.creation(self.env, self.span, self.m_list, self.wc_list, \
-        [5,25], 2, 0.9, 1.2, m_per_wc, random_seed = True)
+        pt_range=[10,50], due_tightness= tightness, add_num= add_job, mpc_max=1.3, length_list = m_per_wc, beta= [10,50], random_seed = True)
         # self.job_creator.output()
 
         '''STEP 4: initialize machines and work centers'''
         for wc in self.wc_list:
             wc.print_info = 0
+            wc.log_info = 0
             wc.initialization(self.job_creator)
         for i,m in enumerate(self.m_list):
             m.print_info = 0
+            m.log_info = 0
             wc_idx = get_group_index(m_per_wc, i)
             m.initialization(self.m_list,self.wc_list,self.job_creator,self.wc_list[wc_idx])
 

@@ -118,11 +118,14 @@ class Sequencing_brain:
             print("===============Into collect_trajectories()================")
         for _ in range(n_trajectories):
             # create the shop floor instance
-            m = 6
-            wc = 3
-            length_list = [2, 2, 2]  
+            m = [6,12,24]
+            wc = [3, 4, 6]
+            # lst = [2 for _ in range(3)]
+            length_list = [[2, 2, 2],[3, 3, 3],[4, 4, 4]]
+            tightness = [0.6, 1.0, 1.6]
+            add_job = [50,100]
             env = simpy.Environment()
-            spf = shopfloor(env, self.span, m, wc, length_list)
+            spf = shopfloor(env, self.span, m[0], wc[0], length_list[0], tightness[0], add_job[0])
 
             self.reset(spf.job_creator, spf.m_list, env=env)
 
@@ -519,12 +522,7 @@ class Sequencing_brain:
 
 
 if __name__ == '__main__':
-    # create the shop floor instance
-    m = 6
-    wc = 3
-    length_list = [2, 2, 2]   
-
-    total_episode = 5
+    total_episode = 6
     span = 1000
 
     sequencing_brain = Sequencing_brain(span= span)
@@ -532,6 +530,6 @@ if __name__ == '__main__':
 
 
     # print(sequencing_brain.tard)
-    # plot_loss(sequencing_brain.tard)
+    plot_loss(sequencing_brain.tard)
     # plot_loss(sequencing_brain.actor_losses)
     # plot_loss(sequencing_brain.critic_losses)

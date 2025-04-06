@@ -8,7 +8,6 @@ import logging
 from tools import *
 from collections import defaultdict
 import pprint
-
 logging.basicConfig(
     level=logging.INFO,  # 设置日志级别为 INFO
     format='%(asctime)s - %(levelname)s - %(message)s',  # 设置日志格式
@@ -18,11 +17,11 @@ logging.basicConfig(
 
 '''mpc : 机器加工系数(Machine Processing Coefficient, MPC)表示为某道工序机器实际工作时间和机器期望加工时间的比值'''
 class creation:
-    def __init__ (self, env, span, machine_list, workcenter_list, pt_range, due_tightness, E_utliz, mpc_max, length_list,**kwargs):
+    def __init__ (self, env, span, machine_list, workcenter_list, pt_range, due_tightness, add_num, mpc_max, length_list,beta,**kwargs):
         if 'seed' in kwargs:
             np.random.seed(kwargs['seed'])
             print("Random seed of job creation is fixed, seed: {}".format(kwargs['seed']))
-        self.log_info = True
+        self.log_info = False
         
         # environemnt and simulation span
         self.env = env
@@ -52,7 +51,6 @@ class creation:
         # tightness factor of jobs
         self.tightness = due_tightness
         # expected utlization rate of machines
-        self.E_utliz = E_utliz
         self.m_per_wc_ = length_list
         # generate a upscending seed for generating initial sequence, start from 0
         self.sequence_seed = np.arange(self.no_wcs)
@@ -60,6 +58,7 @@ class creation:
         self.in_system_job_no = 0
         self.in_system_job_no_dict = {}
         self.index_jobs = 0
+        self.initial_jobs = 0
         # set lists to track the completion rate, realized and expected tardy jobs in system
         # 更新在agent_machine 的 update_global_info_progression
         self.comp_rate_list = [[] for m in self.m_list]
@@ -102,13 +101,14 @@ class creation:
         # beta is the average time interval between job arrivals
         # let beta equals half of the average time of single operation
         # self.span：仿真的总时间。self.beta：作业到达的平均时间间隔。
-        self.beta = self.avg_pt / (self.m_per_wc * self.E_utliz)
+        self.beta = random.randint(beta[0], beta[1])
         # number of new jobs arrive within simulation
-        self.total_no = np.round(self.span/self.beta).astype(int)
-        # self.total_no = 100
-        # print("beta: {}   total_no : {}".format(self.beta, self.total_no))
+        self.add_no = add_num
+
         # the interval between job arrivals by exponential distribution
-        self.arrival_interval = np.random.exponential(self.beta, self.total_no).round()
+        # self.arrival_interval = np.random.exponential(self.beta, self.add_no).round()
+        self.arrival_interval = np.random.randint(beta[0], beta[1], size=self.add_no + 50).round()
+        # print("arrival_interval: {}".format(self.arrival_interval))
         # dynamically change the random seed to avoid extreme case
         if 'realistic_var' in kwargs and kwargs['realistic_var']:
             self.ptl_generation = self.ptl_generation_realistic
@@ -120,13 +120,6 @@ class creation:
             interval = self.span/50
             # print("set up random_seed = true {}".format(interval))
             self.env.process(self.dynamic_seed_change(interval))
-        if 'hetero_len' in kwargs and kwargs['hetero_len']:
-            pass
-        if 'even' in kwargs and kwargs['even']:
-            print("EVEN mode ON")
-            #print(self.arrival_interval)
-            self.arrival_interval = np.ones(self.arrival_interval.size)*self.arrival_interval.mean()
-            #print(self.arrival_interval)
         self.initial_job_assignment()
         # start the new job arrival
         self.env.process(self.new_job_arrival())
@@ -238,10 +231,13 @@ class creation:
 
                     self.index_jobs += 1
             self.wc_list[wc_idx].routing_event.succeed()
+            self.initial_jobs += self.index_jobs
+            # print("initial job assignment done, index_jobs: {}, initial_jobs: {}".format(self.index_jobs, self.initial_jobs))
+  
 
     def new_job_arrival(self):
         # main process
-        while self.index_jobs < self.total_no:
+        while self.index_jobs < self.add_no + self.initial_jobs:
             # draw the time interval betwen job arrivals from exponential distribution
             # The mean of an exp random variable X with rate parameter λ is given by:
             # 1/λ (which equals the term "beta" in np exp function)
@@ -320,7 +316,6 @@ class creation:
                 except:
                     pass
                 # print([m.remaining_pt_list for m in self.m_list])
-
 
     def ptl_generation_random(self):
         ptl = np.random.randint(self.pt_range[0], self.pt_range[1], size = [self.no_machines])
@@ -483,143 +478,6 @@ class creation:
         #print(output_time, cumulative_tard, tard_mean)
         return mean_tardiness, tardy_rate
     
-    def generate_gannt_chart(self):
-        # 获取作业数量
-        extracted_data = self.production_record
-        n_jobs = len(extracted_data)
-        # 提取每个作业的数据
-        data = {}
-        for job_idx, job_data in extracted_data.items():
-            operations = job_data[0]  # 操作时间点和加工时间
-            machines = job_data[1]    # 机器索引
-            job_name = job_data[6]  # 工件名字
-            data[job_idx] = [operations, machines, job_name]
-        # 使用 matplotlib 的 colormap 生成颜色列表
-        colors = plt.cm.get_cmap('tab20').colors  # 获取 'tab20' 的所有颜色
-        n_colors = len(colors)  # 颜色数量
 
-        # 初始化绘图
-        fig, ax = plt.subplots(figsize=(10, 6))
 
-        # 遍历每个作业
-        for job_idx, (operations, machines, job_name) in data.items():
-            color = colors[job_idx % n_colors]  # 循环使用颜色
-            for i, ((start_time, duration, cmt, flag), machine_idx) in enumerate(zip(operations, machines)):
-                # 对时间值进行四舍五入，保留两位小数
-                start_time_rounded = round(start_time, 2)
-                duration_rounded = round(duration, 2)
-                cmt_rounded = round(cmt, 2)
-
-                if flag == 0:
-                    # 正常绘制条形图
-                    ax.barh(
-                        machine_idx,  # 机器索引作为纵坐标
-                        duration_rounded,  # 加工时间作为条形宽度
-                        left=start_time_rounded,  # 操作开始时间作为条形起始位置
-                        color=color,  # 作业颜色
-                        edgecolor='black',  # 条形边框颜色
-                        label=f'Job {job_name}_{job_idx}' if i == 0 else ""  # 仅第一次添加图例
-                    )
-                    # 在条形中间添加标签
-                    label = (
-                        f"Name {job_name}\n"  # 工件名字
-                        f"Index {job_idx}\n"  # 工件序号
-                        f"Op {i+1}\n"  # 工件序号和加工工序数
-                        f"Start {start_time_rounded}\n"  # 开始时间
-                        f"End {round(start_time_rounded + duration_rounded, 2)}\n"  # 结束时间
-                        f"Dur {duration_rounded}"  # 加工时长
-                    )
-                    ax.text(
-                        start_time_rounded + duration_rounded / 2,  # 标签的横坐标（条形中间）
-                        machine_idx,  # 标签的纵坐标（机器索引）
-                        label,  # 标签内容
-                        ha='center',  # 水平居中
-                        va='center',  # 垂直居中
-                        fontsize=8,  # 字体大小
-                        color='black'  # 字体颜色
-                    )
-                else:
-                    # 将 cmt 拆分为 cmt - pt 和 pt
-                    pt_rounded = duration_rounded  # 假设 duration 是 pt
-                    cmt_minus_pt_rounded = round(cmt_rounded - pt_rounded, 2)  # cmt - pt 两位小数
-
-                    # 绘制 cmt - pt 部分（红色边框）
-                    ax.barh(
-                        machine_idx,  # 机器索引作为纵坐标
-                        cmt_minus_pt_rounded,  # cmt - pt 作为条形宽度
-                        left=start_time_rounded,  # 操作开始时间作为条形起始位置
-                        color='red',  # 作业颜色
-                        edgecolor='black',  # 条形边框颜色
-                    )
-                    # # 在条形中间添加标签
-                    # label = (
-                    #     f"Name {job_name}\n"  # 工件名字
-                    #     f"Index {job_idx}\n"  # 工件序号
-                    #     f"Op {i+1}\n"  # 工件序号和加工工序数
-                    #     f"Start {start_time_rounded}\n"  # 开始时间
-                    #     f"End {round(start_time_rounded + cmt_minus_pt_rounded, 2)}\n"  # 结束时间
-                    #     f"Dur {cmt_minus_pt_rounded}"  # 加工时长
-                    # )
-                    # ax.text(
-                    #     start_time_rounded + cmt_minus_pt_rounded / 2,  # 标签的横坐标（条形中间）
-                    #     machine_idx,  # 标签的纵坐标（机器索引）
-                    #     label,  # 标签内容
-                    #     ha='center',  # 水平居中
-                    #     va='center',  # 垂直居中
-                    #     fontsize=8,  # 字体大小
-                    #     color='black'  # 字体颜色
-                    # )
-                    # 绘制 pt 部分
-                    ax.barh(
-                        machine_idx,  # 机器索引作为纵坐标
-                        pt_rounded,  # pt 作为条形宽度
-                        left=round(start_time_rounded + cmt_minus_pt_rounded, 2),  # 操作开始时间 + cmt - pt
-                        color=color,  # 作业颜色
-                        edgecolor='black',  # 条形边框颜色
-                        label=f'Job {job_name}_{job_idx}' if i == 0 else ""  # 仅第一次添加图例
-                    )
-                    # 在条形中间添加标签
-                    label = (
-                        f"Name {job_name}\n"  # 工件名字
-                        f"Index {job_idx}\n"  # 工件序号
-                        f"Op {i+1}\n"  # 工件序号和加工工序数
-                        f"Start {round(start_time_rounded + cmt_minus_pt_rounded, 2)}\n"  # 开始时间
-                        f"End {round(start_time_rounded + cmt_rounded, 2)}\n"  # 结束时间
-                        f"Dur {pt_rounded}"  # 加工时长
-                    )
-                    ax.text(
-                        round(start_time_rounded + cmt_minus_pt_rounded + pt_rounded / 2, 2),  # 标签的横坐标（条形中间）
-                        machine_idx,  # 标签的纵坐标（机器索引）
-                        label,  # 标签内容
-                        ha='center',  # 水平居中
-                        va='center',  # 垂直居中
-                        fontsize=8,  # 字体大小
-                        color='black'  # 字体颜色
-                    )
-
-        # 获取所有 machines 的最大值
-        max_machine = len(self.m_list)
-
-        # 设置纵坐标标签（机器索引）
-        ax.set_yticks(range(max_machine))
-        ax.set_yticklabels([f'Machine {i}' for i in range(max_machine)])
-
-        # 设置横坐标标签（时间）
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Machine')
-
-        # 添加图例
-        ax.legend(loc='upper right')
-
-        # 设置标题
-        ax.set_title('Gantt Chart')
-
-        # 显示网格
-        ax.grid(True, axis='x', linestyle='--', alpha=0.7)
-
-        # 显示图形
-        plt.tight_layout()
-        # 保存图片到本地文件
-        plt.savefig('output.png')  # 保存为PNG格式，文件名是 output.png        
-        plt.show()
 
