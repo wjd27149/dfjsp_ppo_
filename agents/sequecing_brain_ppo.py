@@ -292,7 +292,7 @@ class Sequencing_brain:
             # self.update()
             self.update_with_gae()
             end_time = time.time()
-            print(f"Step {step}/{total_steps} took {end_time - start_time:.2f} seconds")
+            print(f"Episode {step+1}/{total_steps} took {end_time - start_time:.2f} seconds")
             if step % self.save_freq == 0:
                 # 保存模型
                 print(f"Saving model at step {step}")
