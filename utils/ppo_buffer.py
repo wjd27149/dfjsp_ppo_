@@ -53,22 +53,22 @@ class PPOTrajectoryBuffer:
 
         indices = random.sample(range(traj_len), actual_batch_size)
 
-        # 提取对应的数据
+        # 提取对应的数据,tensor方法创建的张量，直接指定在GPU上创建，stack方法创建的，之后再调用to(device)方法
         states = torch.stack([traj[i][0] for i in indices]).reshape(actual_batch_size,1,self.input_size)
-        actions = torch.tensor([traj[i][1] for i in indices], dtype=torch.long).reshape(actual_batch_size,1)
-        log_probs = torch.tensor([traj[i][2] for i in indices], dtype=torch.float32).reshape(actual_batch_size,1)
+        actions = torch.tensor([traj[i][1] for i in indices], dtype=torch.long, device=device).reshape(actual_batch_size,1)
+        log_probs = torch.tensor([traj[i][2] for i in indices], dtype=torch.float32, device=device).reshape(actual_batch_size,1)
         next_states = torch.stack([traj[i][3] for i in indices]).reshape(actual_batch_size,1,self.input_size)
-        rewards = torch.tensor([traj[i][4] for i in indices], dtype=torch.float32).reshape(actual_batch_size,1)
-        dones = torch.zeros(actual_batch_size, dtype=torch.bool)
+        rewards = torch.tensor([traj[i][4] for i in indices], dtype=torch.float32, device=device).reshape(actual_batch_size,1)
+        dones = torch.zeros(actual_batch_size, dtype=torch.bool, device=device)
         dones[-1] = True  # 可以按需设置终止状态
 
         # 将数据移动到GPU
         states = states.to(device)
-        actions = actions.to(device)
-        log_probs = log_probs.to(device)
+        #actions = actions.to(device)
+        #log_probs = log_probs.to(device)
         next_states = next_states.to(device)
-        rewards = rewards.to(device)
-        dones = dones.to(device)
+        #rewards = rewards.to(device)
+        #dones = dones.to(device)
 
         return {
             'states': states,

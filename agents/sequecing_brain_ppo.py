@@ -76,9 +76,9 @@ class Sequencing_brain:
 
         # Initialize the covariance matrix used to query the actor for actions
         self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
-        print(f"cov_var device: {self.cov_var.device}")
+        #print(f"cov_var device: {self.cov_var.device}")
         self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
-        print(f"cov_mat device: {self.cov_mat.device}")
+        #print(f"cov_mat device: {self.cov_mat.device}")
 
         self.n_updates_per_iteration = 5                # Number of times to update actor/critic per iteration
         self.clip_ratio = 0.2                     # Clipping ratio for PPO
