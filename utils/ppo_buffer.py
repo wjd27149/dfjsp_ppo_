@@ -2,6 +2,10 @@ import torch
 import random
 from collections import deque
 
+#Init CUDA
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"PPO Buffer Using device: {device}")
+
 class PPOTrajectoryBuffer:
     def __init__(self, buffer_size, input_size):
         self.input_size = input_size
@@ -57,6 +61,14 @@ class PPOTrajectoryBuffer:
         rewards = torch.tensor([traj[i][4] for i in indices], dtype=torch.float32).reshape(actual_batch_size,1)
         dones = torch.zeros(actual_batch_size, dtype=torch.bool)
         dones[-1] = True  # 可以按需设置终止状态
+
+        # 将数据移动到GPU
+        states = states.to(device)
+        actions = actions.to(device)
+        log_probs = log_probs.to(device)
+        next_states = next_states.to(device)
+        rewards = rewards.to(device)
+        dones = dones.to(device)
 
         return {
             'states': states,

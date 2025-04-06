@@ -95,6 +95,8 @@ import torch.nn.functional as F
 class StateProcessor(nn.Module):
     """共享的状态预处理模块"""
     def __init__(self, input_size):
+        if __debug__:
+            print("===============Into StateProcessor Init()================")
         super().__init__()
         self.no_size = 3
         self.pt_size = 6
@@ -110,10 +112,14 @@ class StateProcessor(nn.Module):
             nn.InstanceNorm1d(5), nn.Flatten())
         self.normlayer_ttd_slack = nn.Sequential(
             nn.InstanceNorm1d(5), nn.Flatten())
+        if __debug__:
+            print("===============StateProcessor Init() completed================")
         
     def forward(self, x):
+        #print("输入 x 的设备:", x.device) 在GPU上
         # 切片处理（与原始结构相同）
         x_no = x[:, :, :self.no_size]
+        #print("x_no 的设备:", x_no.device) 在GPU上
         x_pt = x[:, :, self.no_size:self.pt_size]
         x_remaining_pt = x[:, :, self.pt_size:self.remaining_pt_size]
         x_ttd_slack = x[:, :, self.remaining_pt_size:self.ttd_slack_size]
@@ -124,7 +130,7 @@ class StateProcessor(nn.Module):
         x_normed_pt = self.normlayer_pt(x_pt)
         x_normed_remaining_pt = self.normlayer_remaining_pt(x_remaining_pt)
         x_normed_ttd_slack = self.normlayer_ttd_slack(x_ttd_slack)
-        
+
         # 拼接特征
         return torch.cat([
             x_normed_no, x_normed_pt, 
@@ -154,11 +160,21 @@ class ActorNetwork(nn.Module):
         nn.init.constant_(self.policy_net[-1].bias, 0)
 
     def forward(self, x):
+        if __debug__:
+            print("===============Into Actor forward()================")
+        print("actor network forward x device: ", x.device)
         state_features = self.state_processor(x)
-        return self.policy_net(state_features)
+        print("state_features device: ", state_features.device)
+        if __debug__:
+            print("===============Going to leave Actor forward()================")
+        ret = self.policy_net(state_features)
+        print("ret device: ", ret.device) #ret也在GPU上，正常
+        return ret
     
     def get_log_prob(self, obs, actions):
         """计算动作对数概率"""
+        print(f"actornet->get_log_prob->obs device: {obs.device}")
+        print(f"actornet->get_log_prob->actions device: {actions.device}")
         logits = self.forward(obs)
         dist = torch.distributions.Categorical(logits=logits)
         return dist.log_prob(actions.squeeze(-1))

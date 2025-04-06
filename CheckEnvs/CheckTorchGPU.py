@@ -1,5 +1,6 @@
 import torch
 
+print(f"torch_version = {torch.__version__}")
 # 检查 GPU 是否可用
 if torch.cuda.is_available():
     device = torch.device("cuda")          # 使用默认 GPU
