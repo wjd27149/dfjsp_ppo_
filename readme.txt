@@ -7,3 +7,7 @@
 
     1. WINQ（后续工作中心的平均 机器工作时间）
     2. AVLM（后续工作中心的平均 机器可用时间）
+
+PPOAgent算法核心文件：
+    agents/sequencing_brain_ppo.py
+    networks/ppo_networks.py
