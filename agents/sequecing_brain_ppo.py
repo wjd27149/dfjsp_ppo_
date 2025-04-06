@@ -75,9 +75,10 @@ class Sequencing_brain:
         self.critic_optim = optim.Adam(self.critic.parameters(), lr=self.lr)
 
         # Initialize the covariance matrix used to query the actor for actions
-        # 为两个cov增加to device
-        self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5).to(device)
-        self.cov_mat = torch.diag(self.cov_var).to(device)
+        self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
+        print(f"cov_var device: {self.cov_var.device}")
+        self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
+        print(f"cov_mat device: {self.cov_mat.device}")
 
         self.n_updates_per_iteration = 5                # Number of times to update actor/critic per iteration
         self.clip_ratio = 0.2                     # Clipping ratio for PPO
@@ -161,18 +162,13 @@ class Sequencing_brain:
         next_obs = batch['next_states']
         old_log_probs = batch['log_probs']
 
-        #obs = obs.to(device)
-        #actions = actions.to(device)
-        #rewards = rewards.to(device)
-        #next_obs = next_obs.to(device)
-        #old_log_probs = old_log_probs.to(device)
-
         # 检查张量所处设备
-        print(f"sequencing_brain->update->obs device: {obs.device}")
-        print(f"sequencing_brain->update->actions device: {actions.device}")
-        print(f"sequencing_brain->update->rewards device: {rewards.device}")
-        print(f"sequencing_brain->update->next_obs device: {next_obs.device}")
-        print(f"sequencing_brain->update->old_log_probs device: {old_log_probs.device}")
+        if DEBUG_MODE == 1:
+            print(f"sequencing_brain->update->obs device: {obs.device}")
+            print(f"sequencing_brain->update->actions device: {actions.device}")
+            print(f"sequencing_brain->update->rewards device: {rewards.device}")
+            print(f"sequencing_brain->update->next_obs device: {next_obs.device}")
+            print(f"sequencing_brain->update->old_log_probs device: {old_log_probs.device}")
         
         # 计算回报（不需要梯度）
         with torch.no_grad():
@@ -258,7 +254,7 @@ class Sequencing_brain:
         if DEBUG_MODE == 1:
             print(f"dones device: {dones.device}")
 
-        advantages = torch.zeros_like(rewards).to(device) # 移动到GPU
+        advantages = torch.zeros_like(rewards, device=device) # 在GPU上创建advantages
         gae = 0
         
         # 反向计算
