@@ -27,6 +27,9 @@ from torch.distributions import MultivariateNormal
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+#1 = ENABLE, 0 = DISABLED
+DEBUG_MODE = 0
+
 class Sequencing_brain:
     def __init__(self, span, *args, **kwargs):
 
@@ -86,11 +89,11 @@ class Sequencing_brain:
         self.tard = []
         self.actor_losses = []
         self.critic_losses = []
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===========BrainPPO Init Done==============")
 
     def reset(self, job_creator, m_list, env):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into reset()=================")
         # initialize the environment and the workcenter to be controlled
         self.env = env
@@ -105,12 +108,12 @@ class Sequencing_brain:
             m.job_sequencing = self.action_DRL
             m.reward_function = m.get_reward13
             m.build_state = self.state_multi_channel
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============reset() complted===============")
             
     def collect_trajectories(self, n_trajectories):
         """收集新轨迹并更新经验池"""
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into collect_trajectories()================")
         for _ in range(n_trajectories):
             # create the shop floor instance
@@ -122,31 +125,29 @@ class Sequencing_brain:
 
             self.reset(spf.job_creator, spf.m_list, env=env)
 
-            print("now before env.run()")
             env.run()
-            print("now after env.run()")
             # Collect the trajectory data from the job creator
             self.buffer.finalize_trajectory(spf.job_creator.rep_memo_ppo)
             output_time, cumulative_tard, tard_mean, tard_max, tard_rate = spf.job_creator.tardiness_output()
             self.tard.append(cumulative_tard[-1])
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============collect_trajectories() completed================")
 
     def compute_returns(self, rewards, next_obs):
         """计算n-step回报"""
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into compute_returns()================")
         returns = torch.zeros_like(rewards)
         R = 0
         for t in reversed(range(len(rewards))):
             R = rewards[t] + self.gamma * R
             returns[t] = R
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============compute_returns() completed================")
         return returns
 
     def update(self):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into update()================")
         """使用全经验池数据进行mini-batch更新"""
         if len(self.buffer) < self.minibatch_size:
@@ -215,11 +216,11 @@ class Sequencing_brain:
             self.actor_optim.step()
             self.actor_losses.append(actor_loss.item())
             self.critic_losses.append(critic_loss.item())
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============update() completed ================")
 
     def compute_gae(self, rewards, values, next_values, dones=None):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into compute_gae()================")
         """计算广义优势估计(GAE)
         
@@ -244,16 +245,18 @@ class Sequencing_brain:
         next_values = next_values.squeeze(-1) if next_values.dim() > 1 else next_values
         
         # 检查这几个张量的设备
-        print(f"rewards device: {rewards.device}")
-        print(f"values device: {values.device}")
-        print(f"next_values device: {next_values.device}")
+        if DEBUG_MODE == 1:
+            print(f"rewards device: {rewards.device}")
+            print(f"values device: {values.device}")
+            print(f"next_values device: {next_values.device}")
 
         if dones is None:
             dones = torch.zeros_like(rewards) # zeros_like会继承rewards张量设备
         else:
             dones = dones.squeeze(-1) if dones.dim() > 1 else dones
         
-        print(f"dones device: {dones.device}")
+        if DEBUG_MODE == 1:
+            print(f"dones device: {dones.device}")
 
         advantages = torch.zeros_like(rewards).to(device) # 移动到GPU
         gae = 0
@@ -273,18 +276,21 @@ class Sequencing_brain:
         
         # 标准化优势
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        print(f"advantages device: {advantages.device}")
-        print(f"values device: {values.device}")
-        returns = advantages + values # 报错不在同一设备
+        
+        if DEBUG_MODE == 1:
+            print(f"advantages device: {advantages.device}")
+            print(f"values device: {values.device}")
+        
+        returns = advantages + values
 
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============compute_gae() completed================")
         
         return advantages, returns
     
     def update_with_gae(self):
         """使用GAE进行mini-batch更新"""
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into update_with_gae()================")
         if len(self.buffer) < self.minibatch_size:
             return
@@ -298,11 +304,12 @@ class Sequencing_brain:
         old_log_probs = batch['log_probs']
 
         # 检查经验数据所在设备
-        print(f"obs device: {obs.device}")
-        print(f"actions device: {actions.device}")
-        print(f"rewards device: {rewards.device}")
-        print(f"next_obs device: {next_obs.device}")
-        print(f"old_log_probs device: {old_log_probs.device}")
+        if DEBUG_MODE == 1:
+            print(f"obs device: {obs.device}")
+            print(f"actions device: {actions.device}")
+            print(f"rewards device: {rewards.device}")
+            print(f"next_obs device: {next_obs.device}")
+            print(f"old_log_probs device: {old_log_probs.device}")
 
         # 计算GAE（不需要梯度）
         with torch.no_grad():
@@ -345,12 +352,12 @@ class Sequencing_brain:
             
             self.actor_losses.append(actor_loss.item())
             self.critic_losses.append(critic_loss.item())
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============update_with_gae() completed================")
 
     
     def train(self, total_steps):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into train()================")
         """训练循环"""
         step = 0
@@ -370,7 +377,7 @@ class Sequencing_brain:
                 print(f"Saving model at step {step}")
                 self.save_model(self.address_seed)
             step += 1
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============train() completed================")
 
     def save_model(self, save_dir):
@@ -382,38 +389,33 @@ class Sequencing_brain:
         torch.save(self.critic.state_dict(), os.path.join(save_dir, 'ppo_critic.pt'))
 
     def action_DRL(self, sqc_data):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into action_DRL()================")
-        # sqc_data为list列表
-        m_idx = sqc_data[-1]
-        # m_idx 为int
+        
+        m_idx = sqc_data[-1] # sqc_data为list列表, m_idx 为int
         s_t = self.build_state(sqc_data)    # build_state()中创建s_t张量时指定设备device
-        print("s_t device: ", s_t.device)
+        if DEBUG_MODE == 1:
+            print("s_t device: ", s_t.device)
         
         # 将状态转换为适合网络的格式
         state_tensor = s_t.reshape([1,1,self.input_size]) # shape: [1, state_dim]
-
-        # 当s_t张量在创建的时候就在GPU上时，state_tensor就不需要主动移动了
-        #state_tensor = state_tensor.to(device)
         
-        if __debug__:
+        if DEBUG_MODE == 1:
             print(f"===============the device of state_tensor is:{state_tensor.device}================")
 
         # 使用 actor 网络生成动作分布
         with torch.no_grad():
             # actor 网络输出均值 (假设网络直接输出均值)
             action_mean = self.actor.forward(state_tensor)
-            print(f"action_mean={action_mean}") #action_mean在gpu上
             
             # 创建动作分布 (假设协方差矩阵是固定的或由另一网络输出)
             dist = MultivariateNormal(action_mean, self.cov_mat)
-            print(f"dist={dist}")
             
             # 采样动作
             action = dist.sample()
             log_prob = dist.log_prob(action)
-            if __debug__:
-                print("===============已使用actor网络生成动作分布================")
+            if DEBUG_MODE == 1:
+                print("===============actor net action sampled================")
         
         # 使用 actor 网络选择的动作 (转换为离散动作)
         a_t = torch.argmax(action).item()  # 假设动作空间是离散的
@@ -424,7 +426,7 @@ class Sequencing_brain:
         # 记录经验 (包括 log_prob 用于 PPO 更新)
         self.build_experience(j_idx, m_idx, s_t, a_t,  log_prob=log_prob)
 
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============action_DRL() completed================")
 
         return job_position
@@ -440,7 +442,7 @@ class Sequencing_brain:
     '''
 
     def state_multi_channel(self, sqc_data):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into state_multi_channel()================")
         # information in job number, global and local
         in_system_job_no = self.job_creator.in_system_job_no
@@ -511,7 +513,7 @@ class Sequencing_brain:
         s_t = np.nan_to_num(np.concatenate([no_info, pt_info, remaining_pt_info, ttd_slack_info, progression, heterogeneity]),nan=0,posinf=1,neginf=-1)
         # convert to tensor
         s_t = torch.tensor(s_t, dtype=torch.float, device=device)
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============state_multi_channel() completed================")
         return s_t
     

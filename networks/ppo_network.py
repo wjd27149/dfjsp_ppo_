@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
+#1 = ENABLED, 0=DISABLED
+DEBUG_MODE = 0
+
 class ppo_network(nn.Module):
     def __init__(self, input_size, output_size):
         super(ppo_network, self).__init__()
@@ -95,7 +98,7 @@ import torch.nn.functional as F
 class StateProcessor(nn.Module):
     """共享的状态预处理模块"""
     def __init__(self, input_size):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into StateProcessor Init()================")
         super().__init__()
         self.no_size = 3
@@ -112,7 +115,7 @@ class StateProcessor(nn.Module):
             nn.InstanceNorm1d(5), nn.Flatten())
         self.normlayer_ttd_slack = nn.Sequential(
             nn.InstanceNorm1d(5), nn.Flatten())
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============StateProcessor Init() completed================")
         
     def forward(self, x):
@@ -160,21 +163,24 @@ class ActorNetwork(nn.Module):
         nn.init.constant_(self.policy_net[-1].bias, 0)
 
     def forward(self, x):
-        if __debug__:
+        if DEBUG_MODE == 1:
             print("===============Into Actor forward()================")
-        print("actor network forward x device: ", x.device)
+            print("actor network forward x device: ", x.device)
         state_features = self.state_processor(x)
-        print("state_features device: ", state_features.device)
-        if __debug__:
+        if DEBUG_MODE == 1:
+            print("state_features device: ", state_features.device)
+        if DEBUG_MODE == 1:
             print("===============Going to leave Actor forward()================")
-        ret = self.policy_net(state_features)
-        print("ret device: ", ret.device) #ret也在GPU上，正常
-        return ret
+        # ret = self.policy_net(state_features)
+        # if DEBUG_MODE == 1:
+        #    print("ret device: ", ret.device) #ret也在GPU上，正常
+        return self.policy_net(state_features)
     
     def get_log_prob(self, obs, actions):
         """计算动作对数概率"""
-        print(f"actornet->get_log_prob->obs device: {obs.device}")
-        print(f"actornet->get_log_prob->actions device: {actions.device}")
+        if DEBUG_MODE == 1:
+            print(f"actornet->get_log_prob->obs device: {obs.device}")
+            print(f"actornet->get_log_prob->actions device: {actions.device}")
         logits = self.forward(obs)
         dist = torch.distributions.Categorical(logits=logits)
         return dist.log_prob(actions.squeeze(-1))
