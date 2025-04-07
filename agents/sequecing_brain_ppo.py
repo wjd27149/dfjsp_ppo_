@@ -37,7 +37,12 @@ OBSERVE_CUDA = 0 # 1观察内存信息
 DEBUG_MODE = 0
 
 class Sequencing_brain:
-    def __init__(self, span, *args, **kwargs):
+    def __init__(self, span, m, wc, length_list, tightness, add_job, *args, **kwargs):
+        self.m = m
+        self.wc = wc
+        self.length_list = length_list
+        self.tightness = tightness
+        self.add_job = add_job
 
         # 2. Init Multi-Channel
         self.build_state = self.state_multi_channel      
@@ -80,7 +85,7 @@ class Sequencing_brain:
         #self.gamma = 0.95                      # Discount factor for future rewards
         self.gamma = 0.99                      # Discount factor for future rewards, long-term task
         self.gae_lambda = 0.95                  # Lambda for GAE
-        self.save_freq = 10                             # How often we save in number of iterations
+        self.save_freq = 20                             # How often we save in number of iterations
         self.n_trajectories = 1
 
         self.tard = []
@@ -114,30 +119,17 @@ class Sequencing_brain:
             print("===============Into collect_trajectories()================")
         for _ in range(n_trajectories):
             # create the shop floor instance
-            m = [6,12,24]
-            wc = [3, 4, 6]
-            # lst = [2 for _ in range(3)]
-            length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
-            tightness = [0.6, 1.0, 1.6]
-            add_job = [50,100]
             env = simpy.Environment()
-            spf = shopfloor(env, self.span, m[1], wc[1], length_list[1], tightness[1], add_job[1])
+            spf = shopfloor(env, self.span, self.m, self.wc, self.length_list, self.tightness, self.add_job)
 
             self.reset(spf.job_creator, spf.m_list, env=env)
             env.run()
             if OBSERVE_CUDA == 1:
                 print(f"Allocated Memory: {torch.cuda.memory_allocated() / 1024 / 1024} MBs") #观察显存占用情况
                 print(f"Cached Memory: {torch.cuda.memory_reserved() / 1024 /1024} MBs")
-            ''' 调试代码
-            generate_gannt_chart(spf.job_creator.production_record, spf.m_list) # 画图            
-            
-            k = 0
-            for i in range(len(spf.job_creator.rep_memo)):
-                k+=len(spf.job_creator.rep_memo[i])
-            print(f"Total number of jobs in the trajectory: {k}")
-            print(f"Total number of jobs in the trajectory: {len(spf.job_creator.rep_memo_ppo)}")            
-            '''
-            
+
+            # generate_gannt_chart(spf.job_creator.production_record, spf.m_list) # 画图                     
+
             #Collect the trajectory data from the job creator
             self.buffer.finalize_trajectory(spf.job_creator.rep_memo_ppo)
             output_time, cumulative_tard, tard_mean, tard_max, tard_rate = spf.job_creator.tardiness_output()
@@ -389,8 +381,8 @@ class Sequencing_brain:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         """保存模型参数"""
-        torch.save(self.actor.state_dict(), os.path.join(save_dir, 'ppo_actor.pt'))
-        torch.save(self.critic.state_dict(), os.path.join(save_dir, 'ppo_critic.pt'))
+        torch.save(self.actor.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_actor.pt"))
+        torch.save(self.critic.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_critic.pt"))
 
     def action_DRL(self, sqc_data):
         if DEBUG_MODE == 1:
@@ -427,7 +419,6 @@ class Sequencing_brain:
         # the decision is made by one of the available sequencing rule
         job_position = self.func_list[a_t](sqc_data)
         j_idx = sqc_data[-2][job_position]
-        print(f"job_position: {job_position}, j_idx: {j_idx}, m_idx: {m_idx}, a_t: {a_t}")
         # 记录经验 (包括 log_prob 用于 PPO 更新)
         self.build_experience(j_idx, m_idx, s_t, a_t,  log_prob=log_prob)
 
@@ -516,18 +507,27 @@ class Sequencing_brain:
     # add the experience to job creator's incomplete experiece memory
     def build_experience(self,j_idx,m_idx,s_t,a_t, log_prob):
         self.job_creator.incomplete_rep_memo[m_idx][self.env.now] = [s_t, a_t, log_prob]
-        print(f"job {j_idx} on machine {m_idx} at time {self.env.now} has been added to the experience memory")
 
 
 if __name__ == '__main__':
+
     total_episode = 1
     span = 1000
 
-    sequencing_brain = Sequencing_brain(span= span)
-    sequencing_brain.train(total_steps = total_episode)
+    m = [6,12,24]
+    wc = [3, 4, 6]
+    # lst = [2 for _ in range(3)]
+    length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
+    tightness = [0.6, 1.0, 1.6]
+    add_job = [50,200]
 
-    # downwards are loss info and the most important var we want to optim: tard
-    print(sequencing_brain.tard)
-    #plot_loss(sequencing_brain.tard)
-    #plot_loss(sequencing_brain.actor_losses)
-    #plot_loss(sequencing_brain.critic_losses)
+    for i in range(len(tightness)):
+        for j in range(len(length_list)):
+            for k in range(len(add_job)):
+                if i == 1 and j == 1 and k == 1:
+                    sequencing_brain = Sequencing_brain(span= span, m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k])
+                    sequencing_brain.train(total_steps = total_episode)
+                    # print(sequencing_brain.tard)    
+                    #plot_loss(sequencing_brain.tard)
+                    #plot_loss(sequencing_brain.actor_losses)
+                    #plot_loss(sequencing_brain.critic_losses)
