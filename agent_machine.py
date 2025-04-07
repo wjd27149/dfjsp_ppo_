@@ -85,17 +85,8 @@ class machine:
         self.EMA_realized_tardiness = 0
         self.EMA_alpha = 0.1
         # set the sequencing rule before start of simulation
-        if 'rule' in kwargs:
-            order = "self.job_sequencing = sequencing." + kwargs['rule']
-            try:
-                exec(order)
-                print("machine {} uses {} sequencing rule".format(self.m_idx, kwargs['rule']))
-            except:
-                print("Rule assigned to machine {} is invalid !".format(self.m_idx))
-                raise Exception
-        else:
-            # default sequencing rule is FIFO
-            self.job_sequencing = sequencing.FIFO
+
+        self.job_sequencing = sequencing.FIFO
         # record extra data for learning, initially not activated, can be activated by brains
         self.sequencing_learning_event = self.env.event()
         self.routing_learning_event = self.env.event()
@@ -161,6 +152,7 @@ class machine:
                 # determine the next job to be processed
                 # the returned value is selected job's self.position in queue
                 self.position = self.job_sequencing(self.sequencing_data_generation())
+                print(self.job_sequencing.__name__)
                 self.job_idx = self.queue[self.position]
                 self.before_operation()
                 self.count += 1
@@ -173,6 +165,7 @@ class machine:
             else:
                 self.position = 0
                 self.job_idx = self.queue[self.position]
+                print(('One queue: Machine %s process job %s at time %s'%(self.m_idx,self.job_idx,self.env.now)))
                 if self.log_info:
                     logging.info('One queue: Machine %s process job %s at time %s'%(self.m_idx,self.job_idx,self.env.now))
                 # print("One queue: Machine %s process job %s at time %s"%(self.m_idx,self.job_idx,self.env.now))
@@ -565,8 +558,8 @@ class machine:
         try:
             # check whether corresponding experience exists, if not, ends at this line 用来确定 工件刚进来的时候时候有数据
             self.job_creator.incomplete_rep_memo[self.m_idx][self.decision_point]
-            #print('PARAMETERS',self.m_idx,self.decision_point,self.env.now)
-            #print('BEFORE\n',self.job_creator.incomplete_rep_memo[self.m_idx][self.decision_point])
+            print('PARAMETERS',self.m_idx,self.decision_point,self.env.now)
+            print('BEFORE\n',self.job_creator.incomplete_rep_memo[self.m_idx][self.decision_point])
             # if yes, get the global state
             local_data = self.sequencing_data_generation()
             s_t = self.build_state(local_data)

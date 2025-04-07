@@ -17,6 +17,7 @@ from networks.ppo_network import ppo_network,ActorNetwork, CriticNetwork
 from utils.ppo_buffer import PPOTrajectoryBuffer
 from utils.shop_floor import shopfloor
 from utils.record_output import plot_loss, plot_tard
+from utils.chart import generate_gannt_chart
 
 import time
 
@@ -85,7 +86,7 @@ class Sequencing_brain:
         self.gamma = 0.95                      # Discount factor for future rewards
         self.gae_lambda = 0.95                  # Lambda for GAE
         self.save_freq = 10                             # How often we save in number of iterations
-        self.n_trajectories = 5
+        self.n_trajectories = 1
 
         self.tard = []
         self.actor_losses = []
@@ -125,12 +126,21 @@ class Sequencing_brain:
             tightness = [0.6, 1.0, 1.6]
             add_job = [50,100]
             env = simpy.Environment()
-            spf = shopfloor(env, self.span, m[0], wc[0], length_list[0], tightness[0], add_job[0])
+            spf = shopfloor(env, self.span, m[1], wc[1], length_list[1], tightness[1], add_job[1])
 
             self.reset(spf.job_creator, spf.m_list, env=env)
-
             env.run()
-            # Collect the trajectory data from the job creator
+            ''' 调试代码
+            generate_gannt_chart(spf.job_creator.production_record, spf.m_list) # 画图            
+            
+            k = 0
+            for i in range(len(spf.job_creator.rep_memo)):
+                k+=len(spf.job_creator.rep_memo[i])
+            print(f"Total number of jobs in the trajectory: {k}")
+            print(f"Total number of jobs in the trajectory: {len(spf.job_creator.rep_memo_ppo)}")            
+            '''
+            
+            #Collect the trajectory data from the job creator
             self.buffer.finalize_trajectory(spf.job_creator.rep_memo_ppo)
             output_time, cumulative_tard, tard_mean, tard_max, tard_rate = spf.job_creator.tardiness_output()
             self.tard.append(cumulative_tard[-1])
@@ -422,6 +432,7 @@ class Sequencing_brain:
         # the decision is made by one of the available sequencing rule
         job_position = self.func_list[a_t](sqc_data)
         j_idx = sqc_data[-2][job_position]
+        print(f"job_position: {job_position}, j_idx: {j_idx}, m_idx: {m_idx}, a_t: {a_t}")
         # 记录经验 (包括 log_prob 用于 PPO 更新)
         self.build_experience(j_idx, m_idx, s_t, a_t,  log_prob=log_prob)
 
@@ -429,16 +440,7 @@ class Sequencing_brain:
             print("===============action_DRL() completed================")
 
         return job_position
-    '''
-    2. downwards are functions used for building the state of the experience (replay memory)
-    '''
-    '''
-    local data consists of:
-    0            1                 2         3        4
-    [current_pt, remaining_job_pt, due_list, env.now, completion_rate,
-    5              6      7     8     9        10         11           12/-3   13/-2  14/-1
-    time_till_due, slack, winq, avlm, next_pt, rem_no_op, waited_time, wc_idx, queue, m_idx]
-    '''
+
 
     def state_multi_channel(self, sqc_data):
         if DEBUG_MODE == 1:
@@ -519,10 +521,11 @@ class Sequencing_brain:
     # add the experience to job creator's incomplete experiece memory
     def build_experience(self,j_idx,m_idx,s_t,a_t, log_prob):
         self.job_creator.incomplete_rep_memo[m_idx][self.env.now] = [s_t, a_t, log_prob]
+        print(f"job {j_idx} on machine {m_idx} at time {self.env.now} has been added to the experience memory")
 
 
 if __name__ == '__main__':
-    total_episode = 2000
+    total_episode = 1
     span = 1000
 
     sequencing_brain = Sequencing_brain(span= span)
