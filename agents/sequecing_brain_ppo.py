@@ -26,6 +26,11 @@ from torch.distributions import MultivariateNormal
 #Init CUDA
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+OBSERVE_CUDA = 0 # 1观察内存信息
+
+# GPU性能信息：
+# sequecing_brain_ppo 在__init__中将actor网络和critic网络移动到GPU上，调用了两次to(device)
+# 项目工程中例如PPOBuffer中的其他张量都尽可能在GPU上创建了
 
 #1 = ENABLE, 0 = DISABLED
 DEBUG_MODE = 0
@@ -127,6 +132,9 @@ class Sequencing_brain:
             self.reset(spf.job_creator, spf.m_list, env=env)
 
             env.run()
+            if OBSERVE_CUDA == 1:
+                print(f"Allocated Memory: {torch.cuda.memory_allocated() / 1024 / 1024} MBs") #观察显存占用情况
+                print(f"Cached Memory: {torch.cuda.memory_reserved() / 1024 /1024} MBs")
             # Collect the trajectory data from the job creator
             self.buffer.finalize_trajectory(spf.job_creator.rep_memo_ppo)
             output_time, cumulative_tard, tard_mean, tard_max, tard_rate = spf.job_creator.tardiness_output()

@@ -6,6 +6,7 @@ from collections import deque
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"PPO Buffer Using device: {device}")
 
+
 class PPOTrajectoryBuffer:
     def __init__(self, buffer_size, input_size):
         self.input_size = input_size
@@ -23,12 +24,19 @@ class PPOTrajectoryBuffer:
             if len(step) != 5:
                 raise ValueError(f"Each step should contain 5 elements, but got {len(step)}")
 
+            #print(f"step={step}")
+            #print("press Any Key to continue...")
+            #_ = input()
             state, action, log_prob, next_state, reward = step
+            #print(f"action={action}")
+            #print(f"log_prob={log_prob}")
+            #print(f"next_state={next_state}")
+            #print(f"reward={reward}")
 
-            state = state if torch.is_tensor(state) else torch.tensor(state, dtype=torch.float32)
-            next_state = next_state if torch.is_tensor(next_state) else torch.tensor(next_state, dtype=torch.float32)
+            # state = state if torch.is_tensor(state) else torch.tensor(state, dtype=torch.float32) state已经是GPU上的张量
+            # next_state = next_state if torch.is_tensor(next_state) else torch.tensor(next_state, dtype=torch.float32) next_state已经是GPU上的张量
 
-            # 转成标量
+            # 转成标量 ---为什么要转化成标量？
             action = int(action) if not torch.is_tensor(action) else int(action.item())
             log_prob = float(log_prob.item()) if torch.is_tensor(log_prob) else float(log_prob)
             reward = float(reward.item()) if torch.is_tensor(reward) else float(reward)
@@ -53,7 +61,7 @@ class PPOTrajectoryBuffer:
 
         indices = random.sample(range(traj_len), actual_batch_size)
 
-        # 提取对应的数据,tensor方法创建的张量，直接指定在GPU上创建，stack方法创建的，之后再调用to(device)方法
+        # 提取对应的数据,tensor方法创建的张量，直接指定在GPU上创建，stack方法创建的，经验证已经在GPU上
         states = torch.stack([traj[i][0] for i in indices]).reshape(actual_batch_size,1,self.input_size)
         actions = torch.tensor([traj[i][1] for i in indices], dtype=torch.long, device=device).reshape(actual_batch_size,1)
         log_probs = torch.tensor([traj[i][2] for i in indices], dtype=torch.float32, device=device).reshape(actual_batch_size,1)
@@ -63,10 +71,12 @@ class PPOTrajectoryBuffer:
         dones[-1] = True  # 可以按需设置终止状态
 
         # 将数据移动到GPU
-        states = states.to(device)
+        #print(f"before to(device), states.dveice={states.device}") # 经测试已经在GPU上
+        #states = states.to(device)
         #actions = actions.to(device)
         #log_probs = log_probs.to(device)
-        next_states = next_states.to(device)
+        #print(f"before to(device), next_states.dveice={next_states.device}") #经测试已经在GPU上
+        #next_states = next_states.to(device)
         #rewards = rewards.to(device)
         #dones = dones.to(device)
 
