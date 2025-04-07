@@ -241,11 +241,8 @@ class Sequencing_brain:
             advantages: 形状与输入相同的优势值
             returns: 形状与输入相同的回报值
         """
-        # 将输入移动到GPU计算
-        #rewards = rewards.to(device)
-        #values = values.to(device) 已经在GPU上
-        #next_values = next_values.to(device) 已经在GPU上
 
+        # rewards, values, next_values都已经在GPU上
         # 确保输入是一维的
         rewards = rewards.squeeze(-1) if rewards.dim() > 1 else rewards
         values = values.squeeze(-1) if values.dim() > 1 else values
