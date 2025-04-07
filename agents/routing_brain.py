@@ -1,5 +1,4 @@
 from networks.ddqn_network import ValidatedNetwork
-from utils.replay_buffer import ReplayBuffer
 import dfjsp_routing
 import sys
 import torch.optim as optim
@@ -67,7 +66,6 @@ class RoutingBrain:
 
         self.routing_action_NN_training_interval = 20 # the interval of training the action NN
         self.training_step = 0 # the step of training the action NN
-        self.replay_buffer = ReplayBuffer(self.rep_memo_size)
         
     def reset(self, env, job_creator, m_list, wc_list):
         # initialize the environment and the workcenter to be controlled
