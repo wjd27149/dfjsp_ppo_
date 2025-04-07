@@ -133,7 +133,7 @@ class creation:
         # 随机选取 n 个不重复的键
         selected_keys = random.sample(list(self.job_dict.keys()), kind_job)
         # 为每个工件随机分配一个数量（1 到 self.no_wcs 之间）
-        self.job_dict = generate_job_permutations(list(range(3)))
+        self.job_dict = generate_job_permutations(list(range(self.no_wcs)))
         quantities = [random.randint(1, self.no_wcs) for _ in range(len(selected_keys))]
         selected_keys = random.sample(list(self.job_dict.keys()), 5)
         quantities = [random.randint(1, 1) for _ in range(len(selected_keys))]

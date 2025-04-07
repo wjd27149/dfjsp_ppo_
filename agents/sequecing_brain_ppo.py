@@ -121,7 +121,7 @@ class Sequencing_brain:
             m = [6,12,24]
             wc = [3, 4, 6]
             # lst = [2 for _ in range(3)]
-            length_list = [[2, 2, 2],[3, 3, 3],[4, 4, 4]]
+            length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
             tightness = [0.6, 1.0, 1.6]
             add_job = [50,100]
             env = simpy.Environment()
@@ -293,7 +293,7 @@ class Sequencing_brain:
             print("===============Into update_with_gae()================")
         if len(self.buffer) < self.minibatch_size:
             return
-        
+
         # 获取所有经验数据
         batch = self.buffer.sample_batch(self.minibatch_size)
         obs = batch['states']
@@ -522,7 +522,7 @@ class Sequencing_brain:
 
 
 if __name__ == '__main__':
-    total_episode = 6
+    total_episode = 2000
     span = 1000
 
     sequencing_brain = Sequencing_brain(span= span)
