@@ -45,6 +45,7 @@ class PPOTrajectoryBuffer:
 
             processed.append((state, action, log_prob, next_state, reward))
         self.buffer.append(processed)
+        print(f"Trajectory of length {len(processed)} added to buffer. Current buffer size: {len(self.buffer)}")
 
     def sample_batch(self, batch_size):
         """随机从某一条轨迹采样 batch"""

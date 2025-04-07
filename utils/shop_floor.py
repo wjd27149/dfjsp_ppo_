@@ -36,7 +36,7 @@ class shopfloor:
         '''STEP 3: initialize the job creator'''
         # env, span, machine_list, workcenter_list, number_of_jobs, pt_range, due_tightness, E_utliz
         self.job_creator = job_creation.creation(self.env, self.span, self.m_list, self.wc_list, \
-        pt_range=[10,50], due_tightness= tightness, add_num= add_job, mpc_max=1.3, length_list = m_per_wc, beta= [10,50], random_seed = True)
+        pt_range=[10,50], due_tightness= tightness, add_num= add_job, mpc_max=1.3, length_list = m_per_wc, beta= [10,15], random_seed = True)
         # self.job_creator.output()
 
         '''STEP 4: initialize machines and work centers'''
