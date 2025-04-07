@@ -37,9 +37,11 @@ class PPOTrajectoryBuffer:
             # next_state = next_state if torch.is_tensor(next_state) else torch.tensor(next_state, dtype=torch.float32) next_state已经是GPU上的张量
 
             # 转成标量 ---为什么要转化成标量？
-            action = int(action) if not torch.is_tensor(action) else int(action.item())
-            log_prob = float(log_prob.item()) if torch.is_tensor(log_prob) else float(log_prob)
-            reward = float(reward.item()) if torch.is_tensor(reward) else float(reward)
+            # action和reward应该本身就是标量
+            #action = int(action) if not torch.is_tensor(action) else int(action.item())
+            #print(f"log_prob is tensor? {torch.is_tensor(log_prob)}") 经验证是tensor
+            #log_prob = float(log_prob.item()) if torch.is_tensor(log_prob) else float(log_prob)
+            #reward = float(reward.item()) if torch.is_tensor(reward) else float(reward)
 
             processed.append((state, action, log_prob, next_state, reward))
         self.buffer.append(processed)
@@ -64,7 +66,9 @@ class PPOTrajectoryBuffer:
         # 提取对应的数据,tensor方法创建的张量，直接指定在GPU上创建，stack方法创建的，经验证已经在GPU上
         states = torch.stack([traj[i][0] for i in indices]).reshape(actual_batch_size,1,self.input_size)
         actions = torch.tensor([traj[i][1] for i in indices], dtype=torch.long, device=device).reshape(actual_batch_size,1)
-        log_probs = torch.tensor([traj[i][2] for i in indices], dtype=torch.float32, device=device).reshape(actual_batch_size,1)
+        #log_probs = torch.tensor([traj[i][2] for i in indices], dtype=torch.float32, device=device).reshape(actual_batch_size,1)
+        log_probs = torch.stack([traj[i][2] for i in indices]).reshape(actual_batch_size, 1)
+        #print(f"log_probs device: {log_probs.device}") 经验证在GPU上
         next_states = torch.stack([traj[i][3] for i in indices]).reshape(actual_batch_size,1,self.input_size)
         rewards = torch.tensor([traj[i][4] for i in indices], dtype=torch.float32, device=device).reshape(actual_batch_size,1)
         dones = torch.zeros(actual_batch_size, dtype=torch.bool, device=device)

@@ -23,7 +23,7 @@ import time
 import simpy
 from torch.distributions import MultivariateNormal
 
-#Init CUDA
+#1. Init CUDA
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 OBSERVE_CUDA = 0 # 1观察内存信息
@@ -60,15 +60,6 @@ class Sequencing_brain:
         self.buffer_size = 512
         self.buffer = PPOTrajectoryBuffer(self.buffer_size, self.input_size)  # Initialize the experience replay buffer
 
-        # # Initialize actor and critic networks
-        # self.actor = ppo_network(self.input_size, self.output_size)                                                   # ALG STEP 1
-        # self.critic = ppo_network(self.input_size, 1)
-
-        # # Initialize optimizers for actor and critic
-        # self.lr = 0.0005
-        # self.actor_optim = optim.Adam(self.actor.network.parameters(), lr=self.lr)
-        # self.critic_optim = optim.Adam(self.critic.network.parameters(), lr=self.lr)
-
         # Initialize actor and critic networks
         self.actor = ActorNetwork(self.input_size, self.output_size).to(device)                                                   # ALG STEP 1
         self.critic = CriticNetwork(self.input_size, 1).to(device)
@@ -81,13 +72,12 @@ class Sequencing_brain:
 
         # Initialize the covariance matrix used to query the actor for actions
         self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
-        #print(f"cov_var device: {self.cov_var.device}")
         self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
-        #print(f"cov_mat device: {self.cov_mat.device}")
 
         self.n_updates_per_iteration = 5                # Number of times to update actor/critic per iteration
         self.clip_ratio = 0.2                     # Clipping ratio for PPO
-        self.gamma = 0.95                      # Discount factor for future rewards
+        #self.gamma = 0.95                      # Discount factor for future rewards
+        self.gamma = 0.99                      # Discount factor for future rewards, long-term task
         self.gae_lambda = 0.95                  # Lambda for GAE
         self.save_freq = 10                             # How often we save in number of iterations
         self.n_trajectories = 5
