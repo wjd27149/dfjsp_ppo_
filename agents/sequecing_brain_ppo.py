@@ -529,8 +529,8 @@ if __name__ == '__main__':
     sequencing_brain = Sequencing_brain(span= span)
     sequencing_brain.train(total_steps = total_episode)
 
-
-    # print(sequencing_brain.tard)
-    plot_loss(sequencing_brain.tard)
-    # plot_loss(sequencing_brain.actor_losses)
-    # plot_loss(sequencing_brain.critic_losses)
+    # downwards are loss info and the most important var we want to optim: tard
+    print(sequencing_brain.tard)
+    #plot_loss(sequencing_brain.tard)
+    #plot_loss(sequencing_brain.actor_losses)
+    #plot_loss(sequencing_brain.critic_losses)
