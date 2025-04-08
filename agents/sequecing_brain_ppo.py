@@ -37,18 +37,19 @@ OBSERVE_CUDA = 0 # 1观察内存信息
 DEBUG_MODE = 0
 
 class Sequencing_brain:
-    def __init__(self, span, m, wc, length_list, tightness, add_job, *args, **kwargs):
+    def __init__(self, m, wc, length_list, tightness, add_job, **hyperparameters):
         self.m = m
         self.wc = wc
         self.length_list = length_list
         self.tightness = tightness
         self.add_job = add_job
-
+        # 1. Init hyperpara
+        self._init_hyperparameters(hyperparameters)
         # 2. Init Multi-Channel
         self.build_state = self.state_multi_channel      
         print("---> Multi-Channel (MC) mode ON <---")
 
-        self.span = span
+        #self.span = span
         self.input_size = 25
         # list that contains available rules, and use SPT for the first phase of warmup
         self.func_list = [sequencing.SPT,sequencing.WINQ,sequencing.MS,sequencing.CR]
@@ -120,7 +121,7 @@ class Sequencing_brain:
         for _ in range(n_trajectories):
             # create the shop floor instance
             env = simpy.Environment()
-            spf = shopfloor(env, self.span, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+            spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
 
             self.reset(spf.job_creator, spf.m_list, env=env)
             env.run()
@@ -507,8 +508,24 @@ class Sequencing_brain:
     # add the experience to job creator's incomplete experiece memory
     def build_experience(self,j_idx,m_idx,s_t,a_t, log_prob):
         self.job_creator.incomplete_rep_memo[m_idx][self.env.now] = [s_t, a_t, log_prob]
+        print(f"job {j_idx} on machine {m_idx} at time {self.env.now} has been added to the experience memory")
+    
+    def _init_hyperparameters(self, hyperparameters):
+        self.timesteps_per_batch = 4800
+        self.max_timesteps_per_episode = 1600
+        self.n_updates_per_iteration = 5
+        self.lr = 0.005
+        self.gamma = 0.95
+        self.clip = 0.2
+        self.timespan = 1000
+        self.input_size = 25
+
+        # Change any default values to custom values for specified hyperparameters
+        for param, val in hyperparameters.items():
+            exec('self.' + param + ' = ' + str(val))
 
 
+'''
 if __name__ == '__main__':
 
     total_episode = 1
@@ -531,3 +548,4 @@ if __name__ == '__main__':
                     #plot_loss(sequencing_brain.tard)
                     #plot_loss(sequencing_brain.actor_losses)
                     #plot_loss(sequencing_brain.critic_losses)
+'''
