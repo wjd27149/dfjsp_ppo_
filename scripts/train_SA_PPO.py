@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.arguments import get_args
 from agents.sequecing_brain_ppo import Sequencing_brain
 
-def train(m, wc, length_list, tightness, add_job, hyperparameters, actor_model, critic_model):
+def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters, actor_model, critic_model):
 	"""
 		Trains the model.
 
@@ -23,7 +23,7 @@ def train(m, wc, length_list, tightness, add_job, hyperparameters, actor_model, 
 
 	# Create a model for PPO.
 	model = Sequencing_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
-	total_episode = 1
+	total_episode = total_episode
 	model.train(total_steps = total_episode)
 	print(model.tard) #observing tard value
 
@@ -65,12 +65,14 @@ def main(args):
         length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
         tightness = [0.6, 1.0, 1.6]
         add_job = [50,200]
+        total_episode = 1
 
     for i in range(len(tightness)):
         for j in range(len(length_list)):
             for k in range(len(add_job)):
                 if i == 1 and j == 1 and k == 1:
-                    train(m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k], hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model)
+                    train(m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k], \
+                           total_episode = total_episode, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model)
     else:
         test(actor_model=args.actor_model)
 
