@@ -24,7 +24,7 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 	# Create a model for PPO.
 	model = Sequencing_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
 	total_episode = total_episode
-	model.train(total_steps = total_episode)
+	model.train(total_episodes = total_episode)
 	print(model.tard) #observing tard value
 
 	# Train the PPO model with a specified total timesteps
@@ -56,7 +56,6 @@ def main(args):
 				'clip': 0.2,
 				'input_size': 25
 			  }
-    total_episode = 1
 
     if args.mode == 'train':
         m = [6,12,24]
@@ -65,7 +64,7 @@ def main(args):
         length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
         tightness = [0.6, 1.0, 1.6]
         add_job = [50,200]
-        total_episode = 1
+        total_episode = 10
 
     for i in range(len(tightness)):
         for j in range(len(length_list)):

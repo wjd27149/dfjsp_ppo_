@@ -353,27 +353,30 @@ class Sequencing_brain:
             print("===============update_with_gae() completed================")
 
     
-    def train(self, total_steps):
+    def train(self, total_episodes):
         if DEBUG_MODE == 1:
             print("===============Into train()================")
         """训练循环"""
-        step = 0
-        while step < total_steps:
+        episode = 0
+        while episode < total_episodes:
             start_time = time.time()
             # 1. 收集新轨迹并更新经验池
             # 收集新数据
             self.collect_trajectories(n_trajectories = self.n_trajectories)
             
-            # 更新策略
+            # 2. 更新策略
             # self.update()
             self.update_with_gae()
             end_time = time.time()
-            print(f"Episode {step+1}/{total_steps} took {end_time - start_time:.2f} seconds")
-            if step % self.save_freq == 0:
+            print(f"Episode {episode+1}/{total_episodes} took {end_time - start_time:.2f} seconds")
+            if episode % self.save_freq == 0:
                 # 保存模型
-                print(f"Saving model at step {step}")
+                print(f"Saving model at step {episode}")
                 self.save_model(self.address_seed)
-            step += 1
+            episode += 1
+
+            #3. 对每一集清空经验池，也可以放在第一步前做
+            self.buffer = PPOTrajectoryBuffer(self.buffer_size, self.input_size)
         if DEBUG_MODE == 1:
             print("===============train() completed================")
 
