@@ -11,7 +11,7 @@ class PPOTrajectoryBuffer:
     def __init__(self, buffer_size, input_size):
         self.input_size = input_size
         self.buffer_size = buffer_size
-        self.buffer = deque(maxlen=buffer_size)
+        self.buffer = []    # 直接创个无限的list，不需要buffer_size了
 
     def finalize_trajectory(self, total_trajectory):
         """接收一整条轨迹，添加到 buffer 中"""
@@ -20,6 +20,7 @@ class PPOTrajectoryBuffer:
 
         # 检查并转换每一项为标准格式
         processed = []
+        print("length of total_trajectory: ", len(total_trajectory)) #检查一整条traj的长度
         for step in total_trajectory:
             if len(step) != 5:
                 raise ValueError(f"Each step should contain 5 elements, but got {len(step)}")
@@ -29,18 +30,18 @@ class PPOTrajectoryBuffer:
             state, action, log_prob, next_state, reward = step
             # state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量, 但会在下面的sample_batch()中被统一为张量形式
             processed.append((state, action, log_prob, next_state, reward))
-        
-        self.buffer.append(processed)
+        self.buffer.append(processed)   #buffer的大小就是总共有多少条处理过的traj
         print(f"Trajectory of length {len(processed)} added to buffer. Current buffer size: {len(self.buffer)}")
 
-    def sample_batch(self, batch_size):
+    def sample_batch(self, batch_size): #batch_size ==== minibatch_size
         """随机从某一条轨迹采样 batch"""
         if len(self.buffer) == 0:
-            raise ValueError("Experience buffer is empty")
+            raise ValueError("Trajectory buffer is empty")
 
         # 随机选一条轨迹
         traj = random.choice(self.buffer)
         traj_len = len(traj)
+        print(f"len of traj:{traj_len}")
 
         if traj_len < 2:
             raise ValueError("Trajectory is too short")

@@ -26,6 +26,8 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 	total_episode = total_episode
 	model.train(total_episodes = total_episode)
 	print(model.tard) #observing tard value
+	print("actor_losses: ", model.actor_losses)
+	print("critic_losses: ", model.critic_losses)
 
 	# Train the PPO model with a specified total timesteps
 	# NOTE: You can change the total timesteps here, I put a big number just because
@@ -53,7 +55,7 @@ def main(args):
 				'gamma': 0.99, 
 				'n_updates_per_iteration': 10,
 				'lr': 3e-4, 
-				'clip': 0.2,
+				'clip_ratio': 0.2,
 				'input_size': 25
 			  }
 
@@ -64,7 +66,7 @@ def main(args):
         length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
         tightness = [0.6, 1.0, 1.6]
         add_job = [50,200]
-        total_episode = 10
+        total_episode = 800
 
     for i in range(len(tightness)):
         for j in range(len(length_list)):
