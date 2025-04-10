@@ -79,3 +79,82 @@ class ValidatedNetwork(nn.Module):
             x_rest
         ], dim=1)
         return self.subsequent_module(x)
+    
+
+class SA_network(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(SA_network, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        # for slicing the data
+        self.no_size = 3
+        self.pt_size = 6
+        self.remaining_pt_size = 11
+        self.ttd_slack_size = 16
+        # FCNN parameters
+        layer_1 = 48
+        layer_2 = 36
+        layer_3 = 36
+        layer_4 = 24
+        layer_5 = 24
+        layer_6 = 12
+        # normalization modules
+        self.normlayer_no = nn.Sequential(
+                                nn.InstanceNorm1d(3),
+                                nn.Flatten()
+                                )
+        self.normlayer_pt = nn.Sequential(
+                                nn.InstanceNorm1d(3),
+                                nn.Flatten()
+                                )
+        self.normlayer_remaining_pt = nn.Sequential(
+                                nn.InstanceNorm1d(5),
+                                nn.Flatten()
+                                )
+        self.normlayer_ttd_slack = nn.Sequential(
+                                nn.InstanceNorm1d(5),
+                                nn.Flatten()
+                                )
+        # shared layers of machines
+        self.subsequent_module = nn.Sequential(
+                                nn.Linear(self.input_size, layer_1),
+                                nn.Tanh(),
+                                nn.Linear(layer_1, layer_2),
+                                nn.Tanh(),
+                                nn.Linear(layer_2, layer_3),
+                                nn.Tanh(),
+                                nn.Linear(layer_3, layer_4),
+                                nn.Tanh(),
+                                nn.Linear(layer_4, layer_5),
+                                nn.Tanh(),
+                                nn.Linear(layer_5, layer_6),
+                                nn.Tanh(),
+                                nn.Linear(layer_6, output_size)
+                                )
+        # Huber loss function
+        self.loss_func = F.smooth_l1_loss
+        # the universal network for all scheudling agents
+        self.network = nn.ModuleList([self.normlayer_no, self.normlayer_pt, self.normlayer_remaining_pt, self.normlayer_ttd_slack, self.subsequent_module])
+
+    def forward(self, x, *args):
+        #print('original',x)
+        # slice the data
+        x_no = x[:,:, : self.no_size]
+        x_pt = x[:,:, self.no_size : self.pt_size]
+        x_remaining_pt = x[:,:, self.pt_size : self.remaining_pt_size]
+        x_ttd_slack = x[:,:, self.remaining_pt_size : self.ttd_slack_size]
+        x_rest = x[:,:, self.ttd_slack_size :].squeeze(1)
+        # normalize data in multiple channels
+        x_normed_no = self.network[0](x_no)
+        x_normed_pt = self.network[1](x_pt)
+        x_normed_remaining_pt = self.network[2](x_remaining_pt)
+        x_normed_ttd_slack = self.network[3](x_ttd_slack)
+        #print('normalized',x_normed_no)
+        # concatenate all data
+        #print(x_normed_no, x_normed_pt, x_normed_remaining_pt, x_normed_ttd, x_normed_slack, x_rest)
+        x = torch.cat([x_normed_no, x_normed_pt, x_normed_remaining_pt, x_normed_ttd_slack, x_rest], dim=1)
+        #print('combined',x)
+        # the last, independent part of module
+        x = self.network[4](x)
+        #print('output',x)
+        return x

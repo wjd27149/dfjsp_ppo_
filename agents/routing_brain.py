@@ -1,4 +1,4 @@
-from networks.ddqn_network import ValidatedNetwork
+from networks.ddqn_network import ValidatedNetwork, DQNNetwork
 import dfjsp_routing
 import sys
 import torch.optim as optim
@@ -9,34 +9,30 @@ import copy
 import os
 
 class RoutingBrain:
-    def __init__(self, span, total_episode, *args, **kwargs):
+    def __init__(self, span, total_episode, input_size, output_size, *args, **kwargs):
 
         self.span = span
         self.total_episode = total_episode
 
-        # state space, eah machine generate 3 types of data, along with the processing time of arriving job, and job slack
-        self.input_size = 17            
+        self.input_size = int(input_size)         
         self.func_list = [dfjsp_routing.TT, dfjsp_routing.ET, dfjsp_routing.EA, dfjsp_routing.SQ]
-        # self.func_list = [dfjsp_routing.CT, dfjsp_routing.EA]
-        self.func_selection = 0
         self.output_size = len(self.func_list)
+        
+        self.output_size = int(output_size)
+        print('output size:', self.output_size)
 
         # specify the path to store the model
         self.path = sys.path[0]
 
         # specify the address to store the model
         print("---X TEST mode ON X---")
-        self.address_seed = "{}\\routing_models\\TEST_state_dict"
-        self.routing_action_NN = ValidatedNetwork(self.input_size, self.output_size)
+        self.routing_action_NN = DQNNetwork(self.input_size, self.output_size)
         self.routing_target_NN = copy.deepcopy(self.routing_action_NN)
-        self.build_state = self.state_mutil_channel
+        self.build_state = self.state_deeper
         self.train = self.train_DDQN
 
         # initialize the synchronization time 学习率和探索率
-        self.current_step = 0
         self.current_episode = 0
-        # 两个网络的同步频率 一步代表 Agent在环境中执行1次动作
-        self.sync_interval = 500
 
         ''' specify the optimizer '''
         # 初始化参数
@@ -46,16 +42,15 @@ class RoutingBrain:
         self.initial_epsilon = 0.5  # 初始探索率
         self.epsilon = self.initial_epsilon
         self.epsilon_min = 0.01      # 最小探索率
-        self.epsilon_decay = 0.9995  # 每步衰减系数（0.9995^1000≈0.6）
-        self.total_steps = 300
+        self.epsilon_decay = 0.98  # 每步衰减系数（0.9995^1000≈0.6）
 
         self.optimizer = optim.SGD(self.routing_action_NN.parameters(), 
                                  lr=self.initial_lr, 
                                  momentum=0.9)
 
         # Initialize the parameters for training
-        self.minibatch_size = 64
-        self.rep_memo_size = 512 * 2
+        self.minibatch_size = 64 * 2
+        self.rep_memo_size = 512 * 8
         self.discount_factor = 0.8 # how much agent care long-term rewards
 
         # initialize the list for deta memory
@@ -64,25 +59,28 @@ class RoutingBrain:
         self.time_record = []
         self.loss_record = []
 
+        self.sequencing_target_NN_update_interval = 1000 # the interval of updating the target network
         self.routing_action_NN_training_interval = 20 # the interval of training the action NN
         self.training_step = 0 # the step of training the action NN
         
-    def reset(self, env, job_creator, m_list, wc_list):
+    def reset(self, env,span, job_creator, m_list, wc_list):
         # initialize the environment and the workcenter to be controlled
         self.env = env
+        self.span = span
         self.job_creator = job_creator
         self.m_list = m_list
         self.wc_list = wc_list
         # specify the constituent machines, and activate their routing learning
         self.m_per_wc = len(self.wc_list[0].m_list)
+        
 
         for m in m_list:
             m.routing_learning_event.succeed()
             
         # action space, consists of all selectable machines
         for wc in self.wc_list:
-            wc.job_routing = self.action_DRL
-            wc.build_state = self.state_mutil_channel
+            wc.job_routing = self.action_DRL_machine
+            wc.build_state = self.state_deeper
 
         self.env.process(self.training_process_parameter_sharing())
         self.env.process(self.update_rep_memo_parameter_sharing_process())
@@ -93,12 +91,14 @@ class RoutingBrain:
         # 1. 等待初始数据  
         while len(self.rep_memo) < self.minibatch_size:
             print(f"Waiting for data: {len(self.rep_memo)}/{self.minibatch_size}")
-            yield self.env.timeout(5)  # 逐步推进时间
+            print(f"Current time: {self.env.now}")
+            yield self.env.timeout(50)  # 逐步推进时间
 
         # 2. 正式训练循环
+
         while self.env.now < self.span:
             self.train()
-            print(f"Training at t={self.env.now}, buffer={len(self.rep_memo)}")
+            # print(f"Training at t={self.env.now}, buffer={len(self.rep_memo)}")
             yield self.env.timeout(max(1, self.routing_action_NN_training_interval))  # 至少1时间步
 
     def update_rep_memo_parameter_sharing_process(self):
@@ -120,19 +120,6 @@ class RoutingBrain:
     # random exploration is for collecting more experience
     # routing_data 代表了 routing 方法 选择哪个机器
     # args[2] 代表了那些需要被处理进网络训练的数据
-    def action_random_exploration(self, job_idx, routing_data, job_pt, ttd, job_slack, wc_idx, *args):
-        # s_t = self.build_state(routing_data, job_pt, job_slack, wc_idx)
-        s_t = self.build_state(routing_data, job_pt, ttd, job_slack, wc_idx)
-        # generate a random number in [0, self.m_per_wc)
-        # a_t = torch.randint(0,self.m_per_wc,[])
-        self.func_selection = np.random.randint(self.output_size)
-        a_t = torch.tensor(self.func_selection)
-        machine_position = self.func_list[self.func_selection](job_idx ,routing_data, ttd, job_pt, job_slack, wc_idx)
-        # add current state and action to target wc's incomplete experience
-        self.build_experience(job_idx, s_t, a_t, wc_idx)
-        # print('RANDOM ROUTING: wc {} assign job {} to m {}'.format(wc_idx, job_idx,self.wc_list[wc_idx].m_list[machine_position].m_idx))
-        return machine_position
-
     def action_DRL(self, job_idx, routing_data, job_pt, ttd, job_slack, wc_idx, *args):
         # s_t = self.build_state(routing_data, job_pt, job_slack, wc_idx)
         s_t = self.build_state(routing_data, job_pt, ttd, job_slack, wc_idx)
@@ -140,25 +127,86 @@ class RoutingBrain:
         if random.random() < self.epsilon:
             # a_t = torch.randint(0,self.m_per_wc,[])
             a_t = torch.randint(0,len(self.func_list),[])
-            machine_position = self.func_list[self.func_selection](job_idx, routing_data, ttd, job_pt, job_slack, wc_idx)
+            machine_position = self.func_list[a_t](job_idx, routing_data, ttd, job_pt, job_slack, wc_idx)
             # print('RANDOM ROUTING: wc {} assign job {} to m {}'.format(wc_idx, job_idx,self.wc_list[wc_idx].m_list[machine_position].m_idx))
         else:
             # input state to policy network, produce the state-action value
             value = self.routing_action_NN.forward(s_t.reshape(1,1,self.input_size), wc_idx)
             # print("State:",s_t, 'State-Action Values:', value)
             a_t = torch.argmax(value)
-            machine_position = self.func_list[self.func_selection](job_idx, routing_data, ttd, job_pt, job_slack, wc_idx)
+            machine_position = self.func_list[a_t](job_idx, routing_data, ttd, job_pt, job_slack, wc_idx)
             # print('DRL ROUTING: wc {} assign job {} to m {}'.format(wc_idx, job_idx,self.wc_list[wc_idx].m_list[machine_position].m_idx))
         # add current state and action to target wc's incomplete experience
         # this is the first half of a single record of experience
         # the second half will be appended to first half when routed job complete its operation
         self.build_experience(job_idx, s_t, a_t, wc_idx)
-        self.current_step += 1
         return machine_position
-
+    
+    def action_DRL_machine(self, job_idx, routing_data, job_pt, ttd, job_slack, wc_idx, *args):
+        # s_t = self.build_state(routing_data, job_pt, job_slack, wc_idx)
+        s_t = self.build_state(routing_data, job_pt, ttd, job_slack, wc_idx)
+        # generate the action
+        if random.random() < self.epsilon:
+            a_t = torch.randint(0,self.m_per_wc,[])
+            # a_t = torch.randint(0,len(self.func_list),[])
+            # machine_position = self.func_list[a_t](job_idx, routing_data, ttd, job_pt, job_slack, wc_idx)
+            # print('RANDOM ROUTING: wc {} assign job {} to m {}'.format(wc_idx, job_idx,self.wc_list[wc_idx].m_list[machine_position].m_idx))
+        else:
+            # input state to policy network, produce the state-action value
+            value = self.routing_action_NN.forward(s_t.reshape(1,1,self.input_size), wc_idx)
+            # print("State:",s_t, 'State-Action Values:', value)
+            a_t = torch.argmax(value)
+            # machine_position = self.func_list[a_t](job_idx, routing_data, ttd, job_pt, job_slack, wc_idx)
+            # print('DRL ROUTING: wc {} assign job {} to m {}'.format(wc_idx, job_idx,self.wc_list[wc_idx].m_list[machine_position].m_idx))
+        # add current state and action to target wc's incomplete experience
+        # this is the first half of a single record of experience
+        # the second half will be appended to first half when routed job complete its operation
+        self.build_experience(job_idx, s_t, a_t, wc_idx)
+        return a_t
+    
     def build_experience(self, job_idx, s_t, a_t, wc_idx):
         self.wc_list[wc_idx].incomplete_experience[job_idx] = [s_t, a_t]
+    '''
+    2. downwards are functions used for building the state of the experience (replay memory)
+    '''
 
+    def state_deeper(self, routing_data, job_pt, ttd, job_slack, wc_idx):
+        coming_job_idx = np.where(self.job_creator.next_wc_list == wc_idx)[0]  # return the index of coming jobs
+        coming_job_no = coming_job_idx.size  # expected arriving job number
+        if coming_job_no:  # if there're jobs coming at your workcenter
+            next_job = self.job_creator.release_time_list[coming_job_idx].argmin()  # the index of next job
+            coming_job_time = (self.job_creator.release_time_list[coming_job_idx] - self.env.now)[next_job]  # time from now when next job arrives at workcenter
+            coming_job_slack = self.job_creator.arriving_job_slack_list[coming_job_idx][next_job]  # what's the average slack time of the arriving job
+        else:
+            coming_job_time = 0
+            coming_job_slack = 0
+
+        # Ensure all inputs are numpy arrays with consistent dtype  取前两个数
+        m_state = np.array([a[:2] for a in routing_data], dtype=np.float32)  # Convert to 2D array
+        job_pt = np.array([job_pt], dtype=np.float32)  # Convert to 1D array
+        job_slack = np.array([job_slack], dtype=np.float32)  # Convert to 1D array
+        coming_job_time = np.array([coming_job_time], dtype=np.float32)  # Convert to 1D array
+        coming_job_slack = np.array([coming_job_slack], dtype=np.float32)  # Convert to 1D array
+        # print("m_state:", m_state, m_state.shape, m_state.dtype)
+        # print("job_pt:", job_pt, job_pt.shape, job_pt.dtype)
+        # print("job_slack:", job_slack, job_slack.shape, job_slack.dtype)
+        # print("coming_job_time:", coming_job_time, coming_job_time.shape, coming_job_time.dtype)
+        # print("coming_job_slack:", coming_job_slack, coming_job_slack.shape, coming_job_slack.dtype)
+        # Flatten all arrays
+        m_state_flat = m_state.flatten()  # 展平为 (4,)
+        job_pt_flat = job_pt.flatten()  # 展平为 (2,)
+        job_slack_flat = job_slack.flatten()  # 展平为 (1,)
+        coming_job_time_flat = coming_job_time.flatten()  # 展平为 (1,)
+        coming_job_slack_flat = coming_job_slack.flatten()  # 展平为 (1,)
+
+        # Concatenate all arrays
+        s_t_np = np.concatenate([m_state_flat, job_pt_flat, job_slack_flat, coming_job_time_flat, coming_job_slack_flat])
+
+        # Convert to PyTorch tensor
+        s_t = torch.tensor(s_t_np, dtype=torch.float32)        
+        # print(s_t, s_t.shape, s_t.dtype, s_t.numel())
+        return s_t
+    
     def state_mutil_channel(self, routing_data, job_pt, ttd, job_slack, wc_idx):
         coming_job_idx = np.where(self.job_creator.next_wc_list == wc_idx)[0]  # return the index of coming jobs
         coming_job_no = coming_job_idx.size  # expected arriving job number
@@ -222,23 +270,12 @@ class RoutingBrain:
        dynamic training parameters update and the optimization funciton of ANN
        the class for builidng the ANN is at the bottom
     '''
-
-
-    # print out the functions and classes used in the training
-    def check_parameter(self):
-        print('------------- Training Parameter Check -------------')
-        print("Address seed:",self.address_seed)
-        print('State Func.:',self.build_state.__name__)
-        print('ANN:',self.routing_action_NN.__class__.__name__)
-        print('------------- Training Parameter Check -------------')
-        print('Discount rate:',self.discount_factor)
-        print('Rep memo: %s, Minibatch: %s'%(self.rep_memo_size,self.minibatch_size))
-        print('------------- Training Scenarios Check -------------')
-        print("Configuration: {} work centers, {} machines".format(len(self.wc_list),len(self.m_list)))
-        print("PT heterogeneity:",self.job_creator.pt_range)
-        print('Due date tightness:',self.job_creator.tightness)
-        print('Utilization rate:',self.job_creator.E_utliz)
-        print('----------------------------------------------------')
+    def save_model(self, address_seed):
+        # save the model
+        model_path = (os.path.join(os.path.dirname(sys.path[0]), 'ddqn_models','RA'))
+        os.makedirs(model_path, exist_ok=True)
+        torch.save(self.routing_action_NN.state_dict(), os.path.join(model_path, address_seed))
+        print('model saved at %s' % (os.path.join(self.path, 'ddqn_models', address_seed)))
 
     def update_training_parameters(self):
         """
@@ -248,7 +285,7 @@ class RoutingBrain:
         - 探索率 指数衰减 initial_epsilon → epsilon_min
         """
         # 计算当前进度（基于step而非episode）
-        current_progress = min(self.current_step / self.total_steps, 1.0)
+        current_progress = min(self.current_episode / self.total_episode, 1.0)
         
         # ===== 1. 学习率更新 =====
         # 线性衰减：从initial_lr降到initial_lr*0.1
@@ -256,37 +293,36 @@ class RoutingBrain:
         self.routing_action_NN.lr = max(new_lr, self.min_lr)  # 确保不低于最小值
     
         # ===== 2. 探索率更新 =====
-        # 指数衰减：epsilon = initial_epsilon * decay^current_step
+        # 指数衰减：epsilon = initial_epsilon * decay^current_episode
         self.epsilon = max(
             self.epsilon_min,
-            self.initial_epsilon * (self.epsilon_decay ** self.current_step)
+            self.initial_epsilon * (self.epsilon_decay ** self.current_episode)
         )
         
         # 更新优化器的学习率
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = self.routing_action_NN.lr
         
-        print('-' * 50)
-        print(f'Step {self.current_episode}/{self.total_episode}:')
-        print(f'Learning Rate = {self.routing_action_NN.lr:.6f}')
-        print(f'Exploration Rate (ε) = {self.epsilon:.4f}')
-        print('-' * 50)
+        # print('-' * 50)
+        # print(f'Step {self.current_episode}/{self.total_episode}:')
+        # print(f'Learning Rate = {self.routing_action_NN.lr:.6f}')
+        # print(f'Exploration Rate (ε) = {self.epsilon:.4f}')
+        # print('-' * 50)
 
     # synchronize the ANN and TNN, and some settings
     def update_training_setting_process(self):
         while self.env.now < self.span:
             # synchronize the parameter of policy and target network
             self.routing_target_NN = copy.deepcopy(self.routing_action_NN)
-            print('--------------------------------------------------------')
-            print('the target network is updated at time %s' % self.env.now)
-            print('--------------------------------------------------------')
+            # print('--------------------------------------------------------')
+            # print('the target network is updated at time %s' % self.env.now)
+            # print('--------------------------------------------------------')
             
-            yield self.env.timeout(250)        # 每隔 250 同步一次
+            yield self.env.timeout(self.sequencing_target_NN_update_interval)        # 每隔 1000 同步一次
 
     # the function that draws minibatch and trains the action NN
     def train_DDQN(self):
-
-        print(".............TRAINING .............")
+        # print(".............TRAINING .............")
         """
         draw the random minibatch to train the network, randomly
         every element in the replay menory is a list [s_0, a_0, r_0, s_1]
@@ -358,7 +394,8 @@ class RoutingBrain:
         '''
         # calculate the loss
         loss = self.routing_action_NN.loss_func(current_value, target_value)
-        print('loss: %s:'%(loss))
+        if self.env.now % 1000 == 0:
+            print(f"Episode {self.current_episode + 1}/{self.total_episode}  loss: {loss.item():.4f}  time: {self.env.now}")
 
         self.loss_record.append(float(loss))
         # clear the gradient
@@ -369,6 +406,5 @@ class RoutingBrain:
         # print('perform the optimization of parameters')
         # optimize the parameters
         self.optimizer.step()
-        self.training_step += 1
-        self.update_training_parameters()
-        print(len(self.rep_memo), 'training step:', self.current_step, 'loss:', loss.item(), ' training_step ',self.training_step)
+
+

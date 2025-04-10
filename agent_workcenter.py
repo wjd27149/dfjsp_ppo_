@@ -237,8 +237,9 @@ class workcenter:
         
         # get the state at the time of job output
         # s_t = self.build_state(self.routing_data, self.dummy_pt, 0, self.wc_idx)
-        s_t = self.build_state(self.routing_data, self.dummy_pt, 0, 0, self.wc_idx)
-
+        dummy_list = [self.dummy_pt for _ in range(self.m_no)]
+        s_t = self.build_state(self.routing_data, dummy_list, 0, 0, self.wc_idx)
+        # print(s_t.numel())  # 获取总元素数)
         # calculate reward of action
         # if slack time of job reduces, reward in [-1,0], if slack time increases, in [0,1]
         r_t = torch.tensor(np.clip(slack_change*critical_level_R/20, -1, 1),dtype=torch.float)

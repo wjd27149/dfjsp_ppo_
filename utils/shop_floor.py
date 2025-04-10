@@ -49,5 +49,5 @@ class shopfloor:
             m.log_info = 0
             wc_idx = get_group_index(m_per_wc, i)
             m.initialization(self.m_list,self.wc_list,self.job_creator,self.wc_list[wc_idx])
-
+    
     

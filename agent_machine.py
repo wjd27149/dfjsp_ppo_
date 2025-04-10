@@ -159,7 +159,7 @@ class machine:
                     self.count2 += 1
                 if self.log_info:
                     logging.info('Sequencing: Machine %s choose job %s at time %s'%(self.m_idx,self.job_idx,self.env.now))
-                #print("Sequencing: Machine %s choose job %s at time %s"%(self.m_idx,self.job_idx,self.env.now))
+                # print("Sequencing: Machine %s choose job %s at time %s"%(self.m_idx,self.job_idx,self.env.now))
             # otherwise simply select the first(only) one
             else:
                 self.position = 0
@@ -556,9 +556,10 @@ class machine:
         # only when they have to choose from several queuing jobs
         try:
             # check whether corresponding experience exists, if not, ends at this line 用来确定 工件刚进来的时候时候有数据
-            self.job_creator.incomplete_rep_memo[self.m_idx][self.decision_point]
             # print('PARAMETERS',self.m_idx,self.decision_point,self.env.now)
-            # print('BEFORE\n',self.job_creator.incomplete_rep_memo[self.m_idx][self.decision_point])
+            # print('BEFORE\n',self.job_creator.incomplete_rep_memo[self.m_idx])            
+            self.job_creator.incomplete_rep_memo[self.m_idx][self.decision_point]
+
             # if yes, get the global state
             local_data = self.sequencing_data_generation()
             s_t = self.build_state(local_data)
