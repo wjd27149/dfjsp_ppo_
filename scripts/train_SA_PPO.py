@@ -5,6 +5,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.arguments import get_args
 from agents.sequecing_brain_ppo import Sequencing_brain
+from utils.record_output import plot_loss, plot_tard
 
 def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters, actor_model, critic_model):
 	"""
@@ -23,23 +24,22 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 
 	# Create a model for PPO.
 	model = Sequencing_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
-	total_episode = total_episode
+	#actor_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_actor.pt"
+	#critic_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_critic.pt"
+	#model.actor.load_state_dict(torch.load(actor_model))
+	#model.critic.load_state_dict(torch.load(critic_model))
 	model.train(total_episodes = total_episode)
 	print(model.tard) #observing tard value
-	print("actor_losses: ", model.actor_losses)
-	print("critic_losses: ", model.critic_losses)
-
-	# Train the PPO model with a specified total timesteps
-	# NOTE: You can change the total timesteps here, I put a big number just because
-	# you can kill the process whenever you feel like PPO is converging
-	# model.learn(total_timesteps=200_000_000)
+	#print("actor_losses: ", model.actor_losses)
+	#print("critic_losses: ", model.critic_losses)
+	plot_tard(model.tard)
 
 #TO-DO nothing here, reserved in case future we need this
 def test(actor_model):
-     return
+	 return
 
 def main(args):
-    """
+	"""
 		The main function to run.
 
 		Parameters:
@@ -48,10 +48,10 @@ def main(args):
 		Return:
 			None
 	"""
-    hyperparameters = {
-                'timespan': 1000,
+	hyperparameters = {
+				'timespan': 1000,
 				'timesteps_per_batch': 2048, 
-				'max_timesteps_per_episode': 200, 
+				# 'max_timesteps_per_episode': 200, 
 				'gamma': 0.99, 
 				'n_updates_per_iteration': 10,
 				'lr': 3e-4, 
@@ -59,34 +59,34 @@ def main(args):
 				'input_size': 25
 			  }
 
-    if args.mode == 'train':
-        m = [6,12,24]
-        wc = [3, 4, 6]
-    	# lst = [2 for _ in range(3)]
-        length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
-        tightness = [0.6, 1.0, 1.6]
-        add_job = [50,200]
-        total_episode = 800
+	if args.mode == 'train':
+		m = [6,12,24]
+		wc = [3, 4, 6]
+		# lst = [2 for _ in range(3)]
+		length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
+		tightness = [0.6, 1.0, 1.6]
+		add_job = [50,200]
+		total_episode = 800
 
-    for i in range(len(tightness)):
-        for j in range(len(length_list)):
-            for k in range(len(add_job)):
-                if i == 1 and j == 1 and k == 1:
-                    train(m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k], \
-                           total_episode = total_episode, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model)
-    else:
-        test(actor_model=args.actor_model)
+	for i in range(len(tightness)):
+		for j in range(len(length_list)):
+			for k in range(len(add_job)):
+				if i == 1 and j == 1 and k == 1:
+					train(m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k], \
+						   total_episode = total_episode, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model)
+	else:
+		test(actor_model=args.actor_model)
 
-    
+	
 
-    # downwards are loss info and the most important var we want to optim: tard
-    # print(sequencing_brain.tard)
-    #plot_loss(sequencing_brain.tard)
-    #plot_loss(sequencing_brain.actor_losses)
-    #plot_loss(sequencing_brain.critic_losses)
+	# downwards are loss info and the most important var we want to optim: tard
+	# print(sequencing_brain.tard)
+	#plot_loss(sequencing_brain.tard)
+	#plot_loss(sequencing_brain.actor_losses)
+	#plot_loss(sequencing_brain.critic_losses)
 
 
 if __name__ == '__main__':
-    args = get_args() # Parse arguments from command line
-    main(args)
-    
+	args = get_args() # Parse arguments from command line
+	main(args)
+	

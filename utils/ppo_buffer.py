@@ -8,9 +8,9 @@ print(f"PPO Buffer Using device: {device}")
 
 
 class PPOTrajectoryBuffer:
-    def __init__(self, buffer_size, input_size):
+    def __init__(self, input_size):
         self.input_size = input_size
-        self.buffer_size = buffer_size
+        #self.buffer_size = buffer_size
         self.buffer = []    # 直接创个无限的list，不需要buffer_size了
 
     def finalize_trajectory(self, total_trajectory):
