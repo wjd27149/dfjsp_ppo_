@@ -202,7 +202,7 @@ class Sequencing_brain:
 		batch_state = torch.stack(batch_state).reshape(total_len, 1, self.input_size)
 		batch_next_state = torch.stack(batch_next_state).reshape(total_len, 1, self.input_size)
 		batch_acts = torch.tensor(batch_acts, dtype=torch.long, device=device).reshape(total_len, 1)
-		batch_log_probs = torch.stack(batch_log_probs).reshape(total_len, 1)
+		batch_log_probs = torch.stack(batch_log_probs).reshape(total_len)
 		# batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
 		#print("batch_state shape:", batch_state.shape) # batch_rews是包含若干ep_rews
 		#_ = input()
@@ -260,7 +260,7 @@ class Sequencing_brain:
 		# batch_obs shape: [batch_len, 1, self.input_size], batch_acts shape: [batch_len, 1]
 		log_probs = self.actor.get_log_prob(batch_obs, batch_acts)
 		#print(f"log_probs shape before:{log_probs.shape}, content:{log_probs}")
-		log_probs = log_probs.reshape(len(log_probs), 1)
+		#log_probs = log_probs.reshape(len(log_probs), 1)
 		#print(f"log_probs shape after:{log_probs.shape}, content:{log_probs}")
 		#_ = input()
 		#log_probs2 = []
@@ -352,6 +352,7 @@ class Sequencing_brain:
 			#V, batch_log_probs = self.evaluate(batch_state, batch_acts)
 			#V, _ = self.evaluate(batch_state, batch_acts)
 			# A_k = batch_rtgs - V.detach()
+			# batch_advantages shape [batch_len]
 			A_k = batch_advantages
 			# A_k = (A_k - A_k.mean()) / A_k.std() + 1e-10
 			# 2. 更新策略
@@ -362,7 +363,10 @@ class Sequencing_brain:
 				ratios = torch.exp(curr_log_probs - batch_log_probs)
 				print(f"ratios={ratios}")
 				surr1 = ratios * A_k
+				print(f"surr1={surr1}")
 				surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * A_k
+				print(f"surr2={surr2}")
+				#_=input()
 				actor_loss = (-torch.min(surr1, surr2)).mean()
 				#print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
 				critic_loss = nn.MSELoss()(V, batch_advantages)

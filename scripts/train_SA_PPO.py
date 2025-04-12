@@ -7,7 +7,7 @@ from utils.arguments import get_args
 from agents.sequecing_brain_ppo import Sequencing_brain
 from utils.record_output import plot_loss, plot_tard
 
-CONTINUE = 1
+CONTINUE = 0
 
 def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters, actor_model, critic_model):
 	"""
@@ -27,8 +27,8 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 	# Create a model for PPO.
 	model = Sequencing_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
 	if CONTINUE == 1:
-		actor_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_actor.pt"
-		critic_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_critic.pt"
+		actor_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\24_6_1.6_200_ppo_actor.pt"
+		critic_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\24_6_1.6_200_ppo_critic.pt"
 		model.actor.load_state_dict(torch.load(actor_model))
 		model.critic.load_state_dict(torch.load(critic_model))
 		print(f"[INFO] Previous traiend actor model & critic_model file found, tranning based on them...")
@@ -60,7 +60,7 @@ def main(args):
 				# 'max_timesteps_per_episode': 200, 
 				'gamma': 0.99, 
 				'n_updates_per_iteration': 3,
-				'lr': 3e-4, 
+				'lr': 3e-3, 
 				'clip_ratio': 0.2,
 				'input_size': 25
 			  }
@@ -72,12 +72,12 @@ def main(args):
 		length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
 		tightness = [0.6, 1.0, 1.6]
 		add_job = [50,200]
-		total_episode = 30
+		total_episode = 200
 
 	for i in range(len(tightness)):
 		for j in range(len(length_list)):
 			for k in range(len(add_job)):
-				if i == 1 and j == 1 and k == 1:
+				if i == 2 and j == 2 and k == 1:
 					train(m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k], \
 						   total_episode = total_episode, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model)
 	else:
