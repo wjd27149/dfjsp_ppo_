@@ -1,5 +1,7 @@
 import numpy as np
 import sys
+import multiprocessing as mp
+from multiprocessing import Pool,Queue,Process
 
 
 import sys
@@ -81,7 +83,7 @@ class Sequencing_brain:
 
 		self.gae_lambda = 0.95                  # Lambda for GAE
 		self.save_freq = 20                             # How often we save in number of iterations
-		self.n_trajectories = 5					# 每次rollout模拟5次环境
+		self.n_trajectories = 3					# 每次rollout模拟3次环境
 
 		# below are data used for debug
 		self.tard = []
@@ -110,6 +112,18 @@ class Sequencing_brain:
 		if DEBUG_MODE == 1:
 			print("===============reset() complted===============")
 
+	def worker(self):
+		# create the shop floor instance
+		env = simpy.Environment()
+		spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+
+		self.reset(spf.job_creator, spf.m_list, env=env)
+		env.run()
+		total_traj = spf.job_creator.rep_memo_ppo
+		_, cumulative_tard, _, _, _ = spf.job_creator.tardiness_output()
+		self.tard.append(cumulative_tard[-1])
+		return total_traj
+
 	def collect_trajectories(self, n_trajectories): # equal to rollout()
 		"""收集新轨迹并更新经验池"""
 		# state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量
@@ -120,19 +134,24 @@ class Sequencing_brain:
 		batch_rews = []
 		batch_rtgs = []
 		batch_lens = []
+		batch_dones = []  # 新增：记录终止标志
+		batch_values = []  # 新增：记录状态价值 V(s)
+		batch_advantages = []  # 新增：存储 GAE 优势值
 
 		ep_rews = []
+		ep_dones = []
 		total_len = 0
 		if DEBUG_MODE == 1:
 			print("===============Into collect_trajectories()================")
-		for _ in range(n_trajectories):
+		#_ = input()
+		for n in range(n_trajectories):
 			ep_rews = []
 			# create the shop floor instance
-			env = simpy.Environment()
-			spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+			#env = simpy.Environment()
+			#spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
 
-			self.reset(spf.job_creator, spf.m_list, env=env)
-			env.run()
+			#self.reset(spf.job_creator, spf.m_list, env=env)
+			#env.run()
 			if OBSERVE_CUDA == 1:
 				print(f"Allocated Memory: {torch.cuda.memory_allocated() / 1024 / 1024} MBs") #观察显存占用情况
 				print(f"Cached Memory: {torch.cuda.memory_reserved() / 1024 /1024} MBs")
@@ -140,14 +159,24 @@ class Sequencing_brain:
 			# generate_gannt_chart(spf.job_creator.production_record, spf.m_list) # 画图                     
 
 			#Collect the trajectory data from the job creator
-			# self.buffer.finalize_trajectory(spf.job_creator.rep_memo_ppo)
-			total_traj = spf.job_creator.rep_memo_ppo #一条完整轨迹
+			#total_traj = spf.job_creator.rep_memo_ppo #一条完整轨迹
+			start_time = time.time()
+			total_traj = self.worker()
+			end_time = time.time()
+			print(f"{n} env sample took {end_time - start_time:.2f} seconds")
+			
+			#total_traj = total_trajs[n].get()
+			
 			if not total_traj or len(total_traj) < 1:
 				print("[ERROR] total_traj len < 0 or empty.")
 				return
-			print("length of total_trajectory: ", len(total_traj)) #检查一整条traj的长度
+			# print("length of total_trajectory: ", len(total_traj)) #检查一整条traj的长度
 			total_len += len(total_traj) #计算累计长度，即n条轨迹加起来的总长
-			for step in total_traj:
+			print("total_len now : ", total_len)
+
+			for idx, step in enumerate(total_traj):
+				#print(f"step={step}")
+				#_ = input()
 				if len(step) != 5:
 					raise ValueError(f"Each step should contain 5 elements, but got {len(step)}")
 				state, action, log_prob, next_state, reward = step
@@ -155,26 +184,51 @@ class Sequencing_brain:
 				batch_state.append(state)
 				batch_acts.append(action)
 				batch_log_probs.append(log_prob)
+				#print(f"step log_prob:{log_prob}, log_prob2:{self.actor.get_log_prob(state.reshape(1, 1, self.input_size), torch.tensor(action,device=device))}")
+				#经验证上面两个log_prob是对得上号的
 				batch_next_state.append(next_state)
 				ep_rews.append(reward)
+				done = 1 if (idx == len(total_traj)-1) else 0 #轨迹最后一步停止
+				ep_dones.append(done)
+			# =========================================================================
+
 			ep_t = len(total_traj) #一整条完整轨迹的长度就是当前episode总共用掉的timesteps
 
 			batch_lens.append(ep_t + 1)
 			batch_rews.append(ep_rews)
+			batch_dones.extend(ep_dones)
+		# ========== for _ in range(n_trajectories) ends here================
 
 		batch_state = torch.stack(batch_state).reshape(total_len, 1, self.input_size)
+		batch_next_state = torch.stack(batch_next_state).reshape(total_len, 1, self.input_size)
 		batch_acts = torch.tensor(batch_acts, dtype=torch.long, device=device).reshape(total_len, 1)
 		batch_log_probs = torch.stack(batch_log_probs).reshape(total_len, 1)
-		batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
+		# batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
+		#print("batch_state shape:", batch_state.shape) # batch_rews是包含若干ep_rews
+		#_ = input()
+		#print(f"batch_state:{batch_state}")
+		# 张量的list变量
 		# batch_rews = torch.tensor(batch_rews, dtype=torch.float32, device=device).reshape(total_len, 1)
+		#print(f"batch_rews.dim() > 1 ? : {batch_rews.dim() > 1}")
+		#_ = input()
+		# ========计算一整个batch的GAE========
+		with torch.no_grad(): # 确保 values 和 next_values 的计算不会构建计算图，避免后续反向传播冲突。
+			values = self.critic(batch_state).squeeze()
+			next_values = self.critic(batch_next_state).squeeze()
+		#print(f"values shape:{values.shape}")
+		batch_advantages, _ = self.compute_gae(batch_rews, values, next_values, batch_dones)
+		#print(f"batch_advatages req grad?:{batch_advantages.requires_grad}") 经验证这里已经为false
+		# =======================
 		
+		# ===============================================
+
 
 		# collect data for debug purpose
-		output_time, cumulative_tard, tard_mean, tard_max, tard_rate = spf.job_creator.tardiness_output()
-		self.tard.append(cumulative_tard[-1])
+		#_, cumulative_tard, _, _, _ = spf.job_creator.tardiness_output()
+		#self.tard.append(cumulative_tard[-1])
 		if DEBUG_MODE == 1:
 			print("===============collect_trajectories() completed================")
-		return batch_state, batch_acts, batch_log_probs, batch_rtgs, batch_lens
+		return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_lens
 
 	def compute_rtgs(self, batch_rews): # rewards to go 返回的rtgs为tensor
 		batch_rtgs = []
@@ -203,13 +257,24 @@ class Sequencing_brain:
 
 		# Calculate the log probabilities of batch actions using most recent actor network.
 		# This segment of code is similar to that in get_action()
+		# batch_obs shape: [batch_len, 1, self.input_size], batch_acts shape: [batch_len, 1]
 		log_probs = self.actor.get_log_prob(batch_obs, batch_acts)
+		#print(f"log_probs shape before:{log_probs.shape}, content:{log_probs}")
+		log_probs = log_probs.reshape(len(log_probs), 1)
+		#print(f"log_probs shape after:{log_probs.shape}, content:{log_probs}")
+		#_ = input()
+		#log_probs2 = []
+		#for obs, act in zip(batch_obs, batch_acts):
+			#log_prob2 = self.actor.get_log_prob(obs.reshape(1, 1, self.input_size), act)
+			#log_probs2.append(log_prob2)
+		#log_probs2 = torch.tensor(log_probs2, device=device)
+		#print(f"log_probs2={log_probs2}, log_probs={log_probs}")
 
 		# Return the value vector V of each observation in the batch
 		# and log probabilities log_probs of each action in the batch
 		return V, log_probs
 
-	def compute_gae(self, rewards, values, next_values, dones=None):
+	def compute_gae(self, batch_rews, values, next_values, dones):
 		if DEBUG_MODE == 1:
 			print("===============Into compute_gae()================")
 		"""计算广义优势估计(GAE)
@@ -226,6 +291,13 @@ class Sequencing_brain:
 		"""
 
 		# rewards, values, next_values都已经在GPU上
+		rewards = []
+		# Iterate through each episode
+		for ep_rews in reversed(batch_rews):
+			for rew in reversed(ep_rews):
+				rewards.insert(0, rew)
+		# Convert the rewards into a tensor
+		rewards = torch.tensor(rewards, dtype=torch.float, device=device)
 		# 确保输入是一维的
 		rewards = rewards.squeeze(-1) if rewards.dim() > 1 else rewards
 		values = values.squeeze(-1) if values.dim() > 1 else values
@@ -237,24 +309,16 @@ class Sequencing_brain:
 			print(f"values device: {values.device}")
 			print(f"next_values device: {next_values.device}")
 
-		if dones is None:
-			dones = torch.zeros_like(rewards) # zeros_like会继承rewards张量设备
-		else:
-			dones = dones.squeeze(-1) if dones.dim() > 1 else dones
-		
-		if DEBUG_MODE == 1:
-			print(f"dones device: {dones.device}")
-
 		advantages = torch.zeros_like(rewards, device=device) # 在GPU上创建advantages
 		gae = 0
 		
 		# 反向计算
 		for t in reversed(range(len(rewards))):
 			if t == len(rewards) - 1:
-				next_non_terminal = 1.0 - dones[t].float()
+				next_non_terminal = 1.0 - dones[t]	#若dones为bool tensor，注意改为dones[t].float
 				next_value = next_values[t]
 			else:
-				next_non_terminal = 1.0 - dones[t].float()
+				next_non_terminal = 1.0 - dones[t]
 				next_value = values[t+1]
 			
 			delta = rewards[t] + self.gamma * next_value * next_non_terminal - values[t]
@@ -284,20 +348,24 @@ class Sequencing_brain:
 			start_time = time.time()
 			# 1. 收集新轨迹，不再使用经验池模式，改为返回batch data
 			# batch data为n_trajectories条完整轨迹的数据
-			batch_state, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.collect_trajectories(n_trajectories = self.n_trajectories) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
-			V, _ = self.evaluate(batch_state, batch_acts)
-			A_k = batch_rtgs - V.detach()
-			A_k = (A_k - A_k.mean()) / A_k.std() + 1e-10
+			batch_state, batch_acts, batch_log_probs, batch_advantages, batch_lens = self.collect_trajectories(n_trajectories = self.n_trajectories) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
+			#V, batch_log_probs = self.evaluate(batch_state, batch_acts)
+			#V, _ = self.evaluate(batch_state, batch_acts)
+			# A_k = batch_rtgs - V.detach()
+			A_k = batch_advantages
+			# A_k = (A_k - A_k.mean()) / A_k.std() + 1e-10
 			# 2. 更新策略
 			for _ in range(self.n_updates_per_iteration):
+				print(f"batch_log_probs:{batch_log_probs}")
 				V, curr_log_probs = self.evaluate(batch_state, batch_acts)
 				# print("V.shape=",V.shape)
 				ratios = torch.exp(curr_log_probs - batch_log_probs)
+				print(f"ratios={ratios}")
 				surr1 = ratios * A_k
 				surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * A_k
 				actor_loss = (-torch.min(surr1, surr2)).mean()
 				#print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
-				critic_loss = nn.MSELoss()(V, batch_rtgs)
+				critic_loss = nn.MSELoss()(V, batch_advantages)
 				print(f"actor_loss = {actor_loss}")
 				print(f"critic_loss = {critic_loss}")
 				self.actor_optim.zero_grad()
@@ -317,6 +385,19 @@ class Sequencing_brain:
 		if DEBUG_MODE == 1:
 			print("===============train() completed================")
 
+	def get_action(self, obs):
+		action_cate_logits = self.actor(obs)
+		dist_cate = torch.distributions.Categorical(logits=action_cate_logits)
+		action_cate = dist_cate.sample()
+		#print(f"action DRL returns Categorical action:{a_t_cate}")
+		log_prob_cate = dist_cate.log_prob(action_cate)
+		#print(f"obs shape:{obs.shape},action cate shape:{action_cate.shape}")
+		#_ = input()
+		#log_prob_cate2 = self.actor.get_log_prob(obs, action_cate)
+		#print(f"log_prob_cate={log_prob_cate}, with log_prob_cate2 calculated by get_log_prob={log_prob_cate2}")
+		# 算出来是一致的
+		return action_cate.detach(), log_prob_cate.detach()
+
 	def action_DRL(self, sqc_data):	# 询问actor网络并获取策略
 		if DEBUG_MODE == 1:
 			print("===============Into action_DRL()================")
@@ -335,25 +416,32 @@ class Sequencing_brain:
 		# 使用 actor 网络生成动作分布
 		with torch.no_grad():
 			# actor 网络输出均值 (假设网络直接输出均值)
-			action_mean = self.actor(state_tensor)
-			
+			#action_mult_mean = self.actor(state_tensor)
 			# 创建动作分布 (假设协方差矩阵是固定的或由另一网络输出)
-			dist = MultivariateNormal(action_mean, self.cov_mat)
-			
+			#dist_mult = MultivariateNormal(action_mult_mean, self.cov_mat)
 			# 采样动作
-			action = dist.sample()
-			log_prob = dist.log_prob(action)
+			#action_mult = dist_mult.sample()
+			#a_t = torch.argmax(action_mult).item()
+			#print(f"action DRL returns MultivariateNormal action:{a_t}")
+			#_ = input()
+			#log_prob = dist_mult.log_prob(action_mult)
+			action_cate, log_prob_cate = self.get_action(state_tensor)
+			a_t_cate = action_cate.item()
+			#print(f"action DRL returns Categorical action:{a_t_cate}")
+			#log_prob_cate2 = self.actor.get_log_prob(state_tensor, action_cate)
+			#print(f"log_prob_cate:{log_prob_cate}, log_prob_cate2(using get_log_prob):{log_prob_cate2}")
+			#log_prob_cate = log_prob_cate2
 			if DEBUG_MODE == 1:
 				print("===============actor net action sampled================")
 		
 		# 使用 actor 网络选择的动作 (转换为离散动作)
-		a_t = torch.argmax(action).item()  # 假设动作空间是离散的
+		#a_t = torch.argmax(action_mult).item()  # 假设动作空间是离散的
 		
 		# the decision is made by one of the available sequencing rule
-		job_position = self.func_list[a_t](sqc_data)
+		job_position = self.func_list[a_t_cate](sqc_data)
 		j_idx = sqc_data[-2][job_position]
 		# 记录经验 (包括 log_prob 用于 PPO 更新)
-		self.build_experience(j_idx, m_idx, s_t, a_t,  log_prob=log_prob)
+		self.build_experience(j_idx, m_idx, s_t, a_t_cate,  log_prob=log_prob_cate)
 
 		if DEBUG_MODE == 1:
 			print("===============action_DRL() completed================")
@@ -440,6 +528,8 @@ class Sequencing_brain:
 	# add the experience to job creator's incomplete experiece memory
 	def build_experience(self,j_idx,m_idx,s_t,a_t, log_prob):
 		self.job_creator.incomplete_rep_memo[m_idx][self.env.now] = [s_t, a_t, log_prob]
+		#print(f"self.env.now:[{self.env.now}],s_t:[{s_t}],a_t:[{a_t}]")
+		#_ = input()
 		# print(f"job {j_idx} on machine {m_idx} at time {self.env.now} has been added to the experience memory")
 	
 	def _init_hyperparameters(self, hyperparameters):

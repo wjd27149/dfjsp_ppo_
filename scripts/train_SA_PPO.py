@@ -7,6 +7,8 @@ from utils.arguments import get_args
 from agents.sequecing_brain_ppo import Sequencing_brain
 from utils.record_output import plot_loss, plot_tard
 
+CONTINUE = 1
+
 def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters, actor_model, critic_model):
 	"""
 		Trains the model.
@@ -24,10 +26,14 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 
 	# Create a model for PPO.
 	model = Sequencing_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
-	#actor_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_actor.pt"
-	#critic_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_critic.pt"
-	#model.actor.load_state_dict(torch.load(actor_model))
-	#model.critic.load_state_dict(torch.load(critic_model))
+	if CONTINUE == 1:
+		actor_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_actor.pt"
+		critic_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\12_4_1.0_200_ppo_critic.pt"
+		model.actor.load_state_dict(torch.load(actor_model))
+		model.critic.load_state_dict(torch.load(critic_model))
+		print(f"[INFO] Previous traiend actor model & critic_model file found, tranning based on them...")
+	else:
+		print("[INFO] Traning from scratch...")
 	model.train(total_episodes = total_episode)
 	print(model.tard) #observing tard value
 	#print("actor_losses: ", model.actor_losses)
@@ -53,7 +59,7 @@ def main(args):
 				'timesteps_per_batch': 2048, 
 				# 'max_timesteps_per_episode': 200, 
 				'gamma': 0.99, 
-				'n_updates_per_iteration': 10,
+				'n_updates_per_iteration': 3,
 				'lr': 3e-4, 
 				'clip_ratio': 0.2,
 				'input_size': 25
@@ -66,7 +72,7 @@ def main(args):
 		length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
 		tightness = [0.6, 1.0, 1.6]
 		add_job = [50,200]
-		total_episode = 800
+		total_episode = 30
 
 	for i in range(len(tightness)):
 		for j in range(len(length_list)):

@@ -166,9 +166,18 @@ class ActorNetwork(nn.Module):
     def forward(self, x):   # 组装网络
         state_features = self.state_processor(x)
         return self.policy_net(state_features)
-    
+
     def get_log_prob(self, obs, actions):
-        """计算动作对数概率"""
+        """
+			计算对应动作在对应状态下的对数概率
+
+			参数:
+				obs - 观察到的环境状态集合，张量类型，形状为[n, 1, input_size]，代表n个动作向量，例如[1,1,25]表示一个状态
+				actions - 对应状态下所作动作的集合，张量类型，形状为[1]？
+
+			返回值:
+				张量，对应动作的对数概率（使用Categorical离散分布计算，不是MultiMean!）
+		"""
         if DEBUG_MODE == 1:
             print(f"actornet->get_log_prob->obs device: {obs.device}")
             print(f"actornet->get_log_prob->actions device: {actions.device}")
