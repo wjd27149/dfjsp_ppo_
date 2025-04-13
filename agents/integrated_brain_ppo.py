@@ -132,6 +132,20 @@ class Integrated_brain:
         self.tard.append(cumulative_tard[-1])
         return  RA_total_traj, SA_total_traj
 
+    def compute_rtgs(self, batch_rews): # rewards to go 返回的rtgs为tensor
+        batch_rtgs = []
+		# Iterate through each episode
+        for ep_rews in reversed(batch_rews):
+            discounted_reward = 0 # The discounted reward so far
+			# Iterate through all rewards in the episode. We go backwards for smoother calculation of each
+			# discounted return (think about why it would be harder starting from the beginning)
+            for rew in reversed(ep_rews):
+                discounted_reward = rew + discounted_reward * self.gamma
+                batch_rtgs.insert(0, discounted_reward)
+		# Convert the rewards-to-go into a tensor
+        batch_rtgs = torch.tensor(batch_rtgs, dtype=torch.float, device=device)
+        return batch_rtgs
+
     def collect_trajectories(self, n_trajectories, total_traj_, input_size, critic_network): # equal to rollout()
         """收集新轨迹并更新经验池"""
         # state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量
@@ -211,7 +225,7 @@ class Integrated_brain:
         batch_next_state = torch.stack(batch_next_state).reshape(total_len, 1, input_size)
         batch_acts = torch.tensor(batch_acts, dtype=torch.long, device=device).reshape(total_len, 1)
         batch_log_probs = torch.stack(batch_log_probs).reshape(total_len)
-        # batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
+        batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
         #print("batch_state shape:", batch_state.shape) # batch_rews是包含若干ep_rews
         #_ = input()
         #print(f"batch_state:{batch_state}")
@@ -225,10 +239,11 @@ class Integrated_brain:
             next_values = critic_network(batch_next_state).squeeze()
         #print(f"values shape:{values.shape}")
         batch_advantages, _ = self.compute_gae(batch_rews, values, next_values, batch_dones)
+        batch_rtgs, _ = self.compute_rtgs()
         #print(f"batch_advatages req grad?:{batch_advantages.requires_grad}") 经验证这里已经为false
         if DEBUG_MODE == 1:
             print("===============collect_trajectories() completed================")
-        return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_lens
+        return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs
 
     
     def evaluate(self, batch_obs, batch_acts, critic_network, actor_network):
@@ -317,7 +332,7 @@ class Integrated_brain:
                 zip([RA_total_traj, SA_total_traj], [self.RA_input_size, self.SA_input_size], [self.RA_address_seed, self.SA_address_seed],\
                     [self.RA_critic, self.SA_critic], [self.RA_actor, self.SA_actor],[self.RA_critic_optim, self.SA_critic_optim],[self.RA_actor_optim, self.SA_actor_optim]):
 
-                batch_state, batch_acts, batch_log_probs, batch_advantages, batch_lens = self.collect_trajectories(n_trajectories = self.n_trajectories, total_traj_= traj, input_size= size, critic_network= critic_network) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
+                batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs = self.collect_trajectories(n_trajectories = self.n_trajectories, total_traj_= traj, input_size= size, critic_network= critic_network) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
                 #V, batch_log_probs = self.evaluate(batch_state, batch_acts)
                 #V, _ = self.evaluate(batch_state, batch_acts)
                 # A_k = batch_rtgs - V.detach()
@@ -338,7 +353,8 @@ class Integrated_brain:
                     #_=input()
                     actor_loss = (-torch.min(surr1, surr2)).mean()
                     #print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
-                    critic_loss = nn.MSELoss()(V, batch_advantages)
+                    #critic_loss = nn.MSELoss()(V, batch_advantages)
+                    critic_loss = nn.MSELoss()(V, batch_rtgs)
                     # print(f"actor_loss = {actor_loss}")
                     # print(f"critic_loss = {critic_loss}")
                     actor_optim.zero_grad()
