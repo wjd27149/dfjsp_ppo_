@@ -106,4 +106,4 @@ def plot_tard(loss_record, save_path=None):
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"tard plot saved to {save_path}")
-    # plt.show()
+    plt.show()

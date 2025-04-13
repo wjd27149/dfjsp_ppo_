@@ -97,7 +97,7 @@ import torch.nn.functional as F
 
 class StateProcessor(nn.Module):
     """共享的状态预处理模块"""
-    def __init__(self, input_size):
+    def __init__(self): # 似乎用不到input_size
         if DEBUG_MODE == 1:
             print("===============Into StateProcessor Init()================")
         super().__init__()
@@ -145,7 +145,8 @@ class ActorNetwork(nn.Module):
     """策略网络 Actor"""
     def __init__(self, input_size, output_size):
         super().__init__()
-        self.state_processor = StateProcessor(input_size)
+        self.state_processor = StateProcessor()
+        #self.state_processor = StateProcessor(input_size)
         
         # 独立策略头
         self.policy_net = nn.Sequential(
@@ -155,25 +156,15 @@ class ActorNetwork(nn.Module):
             nn.Tanh(),
             nn.Linear(36, 36),
             nn.Tanh(),
-            nn.Linear(36, output_size)  # 输出各动作的logits
+            nn.Linear(36, output_size)  # 输出各动作的logits(logits: 各动作未归一化的概率)
         )
         
         # 初始化最后一层（重要！）
         nn.init.orthogonal_(self.policy_net[-1].weight, gain=0.01)
         nn.init.constant_(self.policy_net[-1].bias, 0)
 
-    def forward(self, x):
-        if DEBUG_MODE == 1:
-            print("===============Into Actor forward()================")
-            print("actor network forward x device: ", x.device)
+    def forward(self, x):   # 组装网络
         state_features = self.state_processor(x)
-        if DEBUG_MODE == 1:
-            print("state_features device: ", state_features.device)
-        if DEBUG_MODE == 1:
-            print("===============Going to leave Actor forward()================")
-        # ret = self.policy_net(state_features)
-        # if DEBUG_MODE == 1:
-        #    print("ret device: ", ret.device) #ret也在GPU上，正常
         return self.policy_net(state_features)
     
     def get_log_prob(self, obs, actions):
@@ -189,7 +180,8 @@ class CriticNetwork(nn.Module):
     """价值网络 Critic """
     def __init__(self, input_size,output_size):
         super().__init__()
-        self.state_processor = StateProcessor(input_size)
+        self.state_processor = StateProcessor()
+        #self.state_processor = StateProcessor(input_size)
         
         # 更深的价值网络
         self.value_net = nn.Sequential(
