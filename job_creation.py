@@ -392,12 +392,14 @@ class creation:
         # "grand" dictionary for replay memory
         self.incomplete_rep_memo = {}
         self.rep_memo = {}
+        self.rep_memo_ppo = []
+        self.RA_rep_memo_ppo = []
         # for each machine to be controlled, build a sub-dictionary
         # because incomplete experience must be indexed by job's index
         for m in m_list:
             self.incomplete_rep_memo[m.m_idx] = {}
             self.rep_memo[m.m_idx] = []
-            self.rep_memo_ppo = []
+            
 
     def output(self):
         print('job information are as follows:')

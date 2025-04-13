@@ -59,14 +59,7 @@ class Sequencing_brain:
 
 		
 		# specify new address seed for storing the trained parameters
-		self.address_seed = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ppo_models')
-
-		# initialize initial replay memory, a dictionary that contains empty lists of replay memory for machines
-		self.rep_memo = []
-		# some training-related parameters
-		self.minibatch_size = self.timespan #直接按一把模拟来采样
-		# self.buffer_size = 512
-		# self.buffer = PPOTrajectoryBuffer(self.input_size)  # Initialize the experience replay buffer
+		self.address_seed = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ppo_models','SA')
 
 		# Initialize actor and critic networks
 		self.actor = ActorNetwork(self.input_size, self.output_size).to(device)                                                   # ALG STEP 1
@@ -82,8 +75,8 @@ class Sequencing_brain:
 		self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
 
 		self.gae_lambda = 0.95                  # Lambda for GAE
-		self.save_freq = 20                             # How often we save in number of iterations
-		self.n_trajectories = 3					# 每次rollout模拟3次环境
+		self.save_freq = 25                            # How often we save in number of iterations
+		self.n_trajectories = 10					# 每次rollout模拟10次环境
 
 		# below are data used for debug
 		self.tard = []
@@ -163,7 +156,7 @@ class Sequencing_brain:
 			start_time = time.time()
 			total_traj = self.worker()
 			end_time = time.time()
-			print(f"{n} env sample took {end_time - start_time:.2f} seconds")
+			# print(f"{n} env sample took {end_time - start_time:.2f} seconds")
 			
 			#total_traj = total_trajs[n].get()
 			
@@ -172,7 +165,7 @@ class Sequencing_brain:
 				return
 			# print("length of total_trajectory: ", len(total_traj)) #检查一整条traj的长度
 			total_len += len(total_traj) #计算累计长度，即n条轨迹加起来的总长
-			print("total_len now : ", total_len)
+			# print("total_len now : ", total_len)
 
 			for idx, step in enumerate(total_traj):
 				#print(f"step={step}")
@@ -357,21 +350,23 @@ class Sequencing_brain:
 			# A_k = (A_k - A_k.mean()) / A_k.std() + 1e-10
 			# 2. 更新策略
 			for _ in range(self.n_updates_per_iteration):
-				print(f"batch_log_probs:{batch_log_probs}")
+				# print(f"batch_log_probs:{batch_log_probs}")
 				V, curr_log_probs = self.evaluate(batch_state, batch_acts)
 				# print("V.shape=",V.shape)
 				ratios = torch.exp(curr_log_probs - batch_log_probs)
-				print(f"ratios={ratios}")
+				# print(f"ratios={ratios}")
 				surr1 = ratios * A_k
-				print(f"surr1={surr1}")
+				# print(f"surr1={surr1}")
 				surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * A_k
-				print(f"surr2={surr2}")
+				# print(f"surr2={surr2}")
 				#_=input()
 				actor_loss = (-torch.min(surr1, surr2)).mean()
 				#print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
 				critic_loss = nn.MSELoss()(V, batch_advantages)
-				print(f"actor_loss = {actor_loss}")
-				print(f"critic_loss = {critic_loss}")
+				# print(f"actor_loss = {actor_loss}")
+				# print(f"critic_loss = {critic_loss}")
+				self.actor_losses.append(actor_loss.item())
+				self.critic_losses.append(critic_loss.item())
 				self.actor_optim.zero_grad()
 				actor_loss.backward(retain_graph=True)
 				self.actor_optim.step()
@@ -564,5 +559,6 @@ class Sequencing_brain:
 		if not os.path.exists(save_dir):
 			os.makedirs(save_dir)
 		"""保存模型参数"""
+		print(f"Saving model to {self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo.pt")
 		torch.save(self.actor.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_actor.pt"))
 		torch.save(self.critic.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_critic.pt"))

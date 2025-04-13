@@ -4,7 +4,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.arguments import get_args
-from agents.sequecing_brain_ppo import Sequencing_brain
+from agents.integrated_brain_ppo import Integrated_brain
 from utils.record_output import plot_loss, plot_tard
 
 CONTINUE = 0
@@ -25,22 +25,13 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 	print(f"Training", flush=True)
 
 	# Create a model for PPO.
-	model = Sequencing_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
-	if CONTINUE == 1:
-		actor_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\24_6_1.6_200_ppo_actor.pt"
-		critic_model = "D:\\1bs\\lyhbs\\dfjsp_ppo_\\ppo_models\\24_6_1.6_200_ppo_critic.pt"
-		model.actor.load_state_dict(torch.load(actor_model))
-		model.critic.load_state_dict(torch.load(critic_model))
-		print(f"[INFO] Previous traiend actor model & critic_model file found, tranning based on them...")
-	else:
-		print("[INFO] Traning from scratch...")
+	model = Integrated_brain(m, wc, length_list, tightness, add_job, **hyperparameters)
+
 	model.train(total_episodes = total_episode)
 
-	save_path = (os.path.join(os.path.dirname(sys.path[0]), 'ppo_photo_record','SA'))
+	save_path = (os.path.join(os.path.dirname(sys.path[0]), 'integrated_ppo_photo_record'))
 	if not os.path.exists(save_path):
 		os.makedirs(save_path)
-	plot_loss(model.actor_losses, os.path.join(save_path, f"loss_{m}_{wc}_{tightness}_{add_job}_actor_losses"+".png"))
-	plot_loss(model.critic_losses, os.path.join(save_path, f"loss_{m}_{wc}_{tightness}_{add_job}_critic_losses"+".png"))
 	plot_tard(model.tard, os.path.join(save_path, f"tard_{m}_{wc}_{tightness}_{add_job}_tard"+".png"))
 
 	# print(model.tard) #observing tard value
@@ -69,8 +60,7 @@ def main(args):
 				'gamma': 0.99, 
 				'n_updates_per_iteration': 10,
 				'lr': 3e-3, 
-				'clip_ratio': 0.2,
-				'input_size': 25
+				'clip_ratio': 0.2
 			  }
 
 	if args.mode == 'train':
@@ -80,7 +70,7 @@ def main(args):
 		length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
 		tightness = [0.6, 1.0, 1.6]
 		add_job = [100,200]
-		total_episode = 500
+		total_episode = 100
 
 	for i in range(len(tightness)):
 		for j in range(len(length_list)):
@@ -92,14 +82,6 @@ def main(args):
 
 	else:
 		test(actor_model=args.actor_model)
-
-	
-
-	# downwards are loss info and the most important var we want to optim: tard
-	# print(sequencing_brain.tard)
-	#plot_loss(sequencing_brain.tard)
-	#plot_loss(sequencing_brain.actor_losses)
-	#plot_loss(sequencing_brain.critic_losses)
 
 
 if __name__ == '__main__':
