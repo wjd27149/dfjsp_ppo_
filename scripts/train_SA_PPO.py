@@ -5,7 +5,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.arguments import get_args
 from agents.sequecing_brain_ppo import Sequencing_brain
-from utils.record_output import plot_loss, plot_tard
+from utils.record_output import plot_loss, plot_tard, plot_rtgs
 
 CONTINUE = 0
 
@@ -39,6 +39,7 @@ def train(m, wc, length_list, tightness, add_job, total_episode, hyperparameters
 	save_path = (os.path.join(os.path.dirname(sys.path[0]), 'ppo_photo_record','SA'))
 	if not os.path.exists(save_path):
 		os.makedirs(save_path)
+	plot_rtgs(model.ep_rtgs, os.path.join(save_path, f"rtgs_{m}_{wc}_{tightness}_{add_job}_ep_rtgs"+".png"))
 	plot_loss(model.actor_losses, os.path.join(save_path, f"loss_{m}_{wc}_{tightness}_{add_job}_actor_losses"+".png"))
 	plot_loss(model.critic_losses, os.path.join(save_path, f"loss_{m}_{wc}_{tightness}_{add_job}_critic_losses"+".png"))
 	plot_tard(model.tard, os.path.join(save_path, f"tard_{m}_{wc}_{tightness}_{add_job}_tard"+".png"))
@@ -67,7 +68,7 @@ def main(args):
 				'timesteps_per_batch': 2048, 
 				# 'max_timesteps_per_episode': 200, 
 				'gamma': 0.99, 
-				'n_updates_per_iteration': 10,
+				'n_updates_per_iteration': 3,
 				'lr': 3e-3, 
 				'clip_ratio': 0.2,
 				'input_size': 25
@@ -80,7 +81,7 @@ def main(args):
 		length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
 		tightness = [0.6, 1.0, 1.6]
 		add_job = [100,200]
-		total_episode = 500
+		total_episode = 80
 
 	for i in range(len(tightness)):
 		for j in range(len(length_list)):

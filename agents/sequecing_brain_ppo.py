@@ -71,17 +71,18 @@ class Sequencing_brain:
 		self.critic_optim = optim.Adam(self.critic.parameters(), lr=self.lr)
 
 		# Initialize the covariance matrix used to query the actor for actions
-		self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
-		self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
+		#self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
+		#self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
 
 		self.gae_lambda = 0.95                  # Lambda for GAE
 		self.save_freq = 25                            # How often we save in number of iterations
-		self.n_trajectories = 10					# 每次rollout模拟10次环境
+		self.n_trajectories = 3					# 每次rollout模拟3次环境
 
 		# below are data used for debug
 		self.tard = []
 		self.actor_losses = []
 		self.critic_losses = []
+		self.ep_rtgs = []
 		if DEBUG_MODE == 1:
 			print("===========BrainPPO Init Done==============")
 
@@ -196,7 +197,7 @@ class Sequencing_brain:
 		batch_next_state = torch.stack(batch_next_state).reshape(total_len, 1, self.input_size)
 		batch_acts = torch.tensor(batch_acts, dtype=torch.long, device=device).reshape(total_len, 1)
 		batch_log_probs = torch.stack(batch_log_probs).reshape(total_len)
-		# batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
+		batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
 		#print("batch_state shape:", batch_state.shape) # batch_rews是包含若干ep_rews
 		#_ = input()
 		#print(f"batch_state:{batch_state}")
@@ -221,7 +222,7 @@ class Sequencing_brain:
 		#self.tard.append(cumulative_tard[-1])
 		if DEBUG_MODE == 1:
 			print("===============collect_trajectories() completed================")
-		return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_lens
+		return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs
 
 	def compute_rtgs(self, batch_rews): # rewards to go 返回的rtgs为tensor
 		batch_rtgs = []
@@ -236,6 +237,8 @@ class Sequencing_brain:
 			for rew in reversed(ep_rews):
 				discounted_reward = rew + discounted_reward * self.gamma
 				batch_rtgs.insert(0, discounted_reward)
+			
+			self.ep_rtgs.append(discounted_reward) #其实直接记录有问题，因为这里是for reversed
 
 		# Convert the rewards-to-go into a tensor
 		batch_rtgs = torch.tensor(batch_rtgs, dtype=torch.float, device=device)
@@ -341,7 +344,9 @@ class Sequencing_brain:
 			start_time = time.time()
 			# 1. 收集新轨迹，不再使用经验池模式，改为返回batch data
 			# batch data为n_trajectories条完整轨迹的数据
-			batch_state, batch_acts, batch_log_probs, batch_advantages, batch_lens = self.collect_trajectories(n_trajectories = self.n_trajectories) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
+			batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs = self.collect_trajectories(n_trajectories = self.n_trajectories) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
+			print(f"batch_rtgs:{batch_rtgs[0].item()}")
+			#_ = input()
 			#V, batch_log_probs = self.evaluate(batch_state, batch_acts)
 			#V, _ = self.evaluate(batch_state, batch_acts)
 			# A_k = batch_rtgs - V.detach()
@@ -362,9 +367,9 @@ class Sequencing_brain:
 				#_=input()
 				actor_loss = (-torch.min(surr1, surr2)).mean()
 				#print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
-				critic_loss = nn.MSELoss()(V, batch_advantages)
-				# print(f"actor_loss = {actor_loss}")
-				# print(f"critic_loss = {critic_loss}")
+				critic_loss = nn.MSELoss()(V, batch_rtgs)
+				print(f"actor_loss = {actor_loss}")
+				print(f"critic_loss = {critic_loss}")
 				self.actor_losses.append(actor_loss.item())
 				self.critic_losses.append(critic_loss.item())
 				self.actor_optim.zero_grad()
