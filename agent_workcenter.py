@@ -250,9 +250,12 @@ class workcenter:
         #r_t = torch.tensor(np.clip(slack_change/40, -1, 1),dtype=torch.float)
         # print('build complete memory',job_idx,[r_t, s_t],self.env.now)
         # append reward and new state to corresponding incomplete experience
-        self.incomplete_experience[job_idx] += [r_t, s_t]
+        self.incomplete_experience[job_idx] += [s_t, r_t]
+        
         # and pop out this complete experience, add it to complete replay memory
+        self.job_creator.RA_rep_memo_ppo.append(self.incomplete_experience[job_idx])
         self.rep_memo.append(self.incomplete_experience.pop(job_idx))
+        
 
     def complete_experience_global_reward(self, job_idx, slack_change, critical_level_R):
         self.state_update_before_routing()

@@ -1,5 +1,7 @@
 import numpy as np
 import sys
+import multiprocessing as mp
+from multiprocessing import Pool,Queue,Process
 
 
 import sys
@@ -14,7 +16,7 @@ import sequencing
 import os
 
 from networks.ppo_network import ppo_network,ActorNetwork, CriticNetwork
-from utils.ppo_buffer import PPOTrajectoryBuffer
+# from utils.ppo_buffer import PPOTrajectoryBuffer
 from utils.shop_floor import shopfloor
 from utils.record_output import plot_loss, plot_tard
 from utils.chart import generate_gannt_chart
@@ -45,27 +47,19 @@ class Sequencing_brain:
 		self.add_job = add_job
 		# 1. Init hyperpara
 		self._init_hyperparameters(hyperparameters)
+
 		# 2. Init Multi-Channel
 		self.build_state = self.state_multi_channel      
 		print("---> Multi-Channel (MC) mode ON <---")
 
-		#self.span = span
-		self.input_size = 25
 		# list that contains available rules, and use SPT for the first phase of warmup
 		self.func_list = [sequencing.SPT,sequencing.WINQ,sequencing.MS,sequencing.CR]
 		# action space, consists of all selectable rules
 		self.output_size = len(self.func_list)
 
-		'''
-		specify new address seed for storing the trained parameters
-		'''
-		self.address_seed = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ppo_models')
-		# initialize initial replay memory, a dictionary that contains empty lists of replay memory for machines
-		self.rep_memo = []
-		# some training-related parameters
-		self.minibatch_size = self.timespan #直接按一把模拟来采样
-		self.buffer_size = 512
-		self.buffer = PPOTrajectoryBuffer(self.buffer_size, self.input_size)  # Initialize the experience replay buffer
+		
+		# specify new address seed for storing the trained parameters
+		self.address_seed = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ppo_models','SA')
 
 		# Initialize actor and critic networks
 		self.actor = ActorNetwork(self.input_size, self.output_size).to(device)                                                   # ALG STEP 1
@@ -73,24 +67,26 @@ class Sequencing_brain:
 
 		# Initialize optimizers for actor and critic
 		# actor, critic网络已经移动到GPU上后，才可以建立optim
-		# self.lr = 0.0005
 		self.actor_optim = optim.Adam(self.actor.parameters(), lr=self.lr)
 		self.critic_optim = optim.Adam(self.critic.parameters(), lr=self.lr)
 
 		# Initialize the covariance matrix used to query the actor for actions
-		self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
-		self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
+		#self.cov_var = torch.full(size=(self.output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
+		#self.cov_mat = torch.diag(self.cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
 
 		self.gae_lambda = 0.95                  # Lambda for GAE
-		self.save_freq = 20                             # How often we save in number of iterations
-		self.n_trajectories = 1					# 每次rollout模拟10次环境
+		self.save_freq = 25                            # How often we save in number of iterations
+		self.n_trajectories = 3					# 每次rollout模拟3次环境
 
+		# below are data used for debug
 		self.tard = []
 		self.actor_losses = []
 		self.critic_losses = []
+		self.ep_rtgs = []
 		if DEBUG_MODE == 1:
 			print("===========BrainPPO Init Done==============")
 
+	# 用来重置模拟环境
 	def reset(self, job_creator, m_list, env):
 		if DEBUG_MODE == 1:
 			print("===============Into reset()=================")
@@ -109,18 +105,47 @@ class Sequencing_brain:
 			m.build_state = self.state_multi_channel
 		if DEBUG_MODE == 1:
 			print("===============reset() complted===============")
-			
-	def collect_trajectories(self, n_trajectories):
+
+	def worker(self):
+		# create the shop floor instance
+		env = simpy.Environment()
+		spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+
+		self.reset(spf.job_creator, spf.m_list, env=env)
+		env.run()
+		total_traj = spf.job_creator.rep_memo_ppo
+		_, cumulative_tard, _, _, _ = spf.job_creator.tardiness_output()
+		self.tard.append(cumulative_tard[-1])
+		return total_traj
+
+	def collect_trajectories(self, n_trajectories): # equal to rollout()
 		"""收集新轨迹并更新经验池"""
+		# state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量
+		batch_state =[]	#
+		batch_acts = []
+		batch_log_probs = []	#
+		batch_next_state = []	#
+		batch_rews = []
+		batch_rtgs = []
+		batch_lens = []
+		batch_dones = []  # 新增：记录终止标志
+		batch_values = []  # 新增：记录状态价值 V(s)
+		batch_advantages = []  # 新增：存储 GAE 优势值
+
+		ep_rews = []
+		ep_dones = []
+		total_len = 0
 		if DEBUG_MODE == 1:
 			print("===============Into collect_trajectories()================")
-		for _ in range(n_trajectories):
+		#_ = input()
+		for n in range(n_trajectories):
+			ep_rews = []
 			# create the shop floor instance
-			env = simpy.Environment()
-			spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+			#env = simpy.Environment()
+			#spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
 
-			self.reset(spf.job_creator, spf.m_list, env=env)
-			env.run()
+			#self.reset(spf.job_creator, spf.m_list, env=env)
+			#env.run()
 			if OBSERVE_CUDA == 1:
 				print(f"Allocated Memory: {torch.cuda.memory_allocated() / 1024 / 1024} MBs") #观察显存占用情况
 				print(f"Cached Memory: {torch.cuda.memory_reserved() / 1024 /1024} MBs")
@@ -128,94 +153,124 @@ class Sequencing_brain:
 			# generate_gannt_chart(spf.job_creator.production_record, spf.m_list) # 画图                     
 
 			#Collect the trajectory data from the job creator
-			self.buffer.finalize_trajectory(spf.job_creator.rep_memo_ppo)
-			output_time, cumulative_tard, tard_mean, tard_max, tard_rate = spf.job_creator.tardiness_output()
-			self.tard.append(cumulative_tard[-1])
+			#total_traj = spf.job_creator.rep_memo_ppo #一条完整轨迹
+			start_time = time.time()
+			total_traj = self.worker()
+			end_time = time.time()
+			# print(f"{n} env sample took {end_time - start_time:.2f} seconds")
+			
+			#total_traj = total_trajs[n].get()
+			
+			if not total_traj or len(total_traj) < 1:
+				print("[ERROR] total_traj len < 0 or empty.")
+				return
+			# print("length of total_trajectory: ", len(total_traj)) #检查一整条traj的长度
+			total_len += len(total_traj) #计算累计长度，即n条轨迹加起来的总长
+			# print("total_len now : ", total_len)
+
+			for idx, step in enumerate(total_traj):
+				#print(f"step={step}")
+				#_ = input()
+				if len(step) != 5:
+					raise ValueError(f"Each step should contain 5 elements, but got {len(step)}")
+				state, action, log_prob, next_state, reward = step
+				# state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量, 但会在下面的sample_batch()中被统一为张量形式
+				batch_state.append(state)
+				batch_acts.append(action)
+				batch_log_probs.append(log_prob)
+				#print(f"step log_prob:{log_prob}, log_prob2:{self.actor.get_log_prob(state.reshape(1, 1, self.input_size), torch.tensor(action,device=device))}")
+				#经验证上面两个log_prob是对得上号的
+				batch_next_state.append(next_state)
+				ep_rews.append(reward)
+				done = 1 if (idx == len(total_traj)-1) else 0 #轨迹最后一步停止
+				ep_dones.append(done)
+			# =========================================================================
+
+			ep_t = len(total_traj) #一整条完整轨迹的长度就是当前episode总共用掉的timesteps
+
+			batch_lens.append(ep_t + 1)
+			batch_rews.append(ep_rews)
+			batch_dones.extend(ep_dones)
+		# ========== for _ in range(n_trajectories) ends here================
+
+		batch_state = torch.stack(batch_state).reshape(total_len, 1, self.input_size)
+		batch_next_state = torch.stack(batch_next_state).reshape(total_len, 1, self.input_size)
+		batch_acts = torch.tensor(batch_acts, dtype=torch.long, device=device).reshape(total_len, 1)
+		batch_log_probs = torch.stack(batch_log_probs).reshape(total_len)
+		batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
+		#print("batch_state shape:", batch_state.shape) # batch_rews是包含若干ep_rews
+		#_ = input()
+		#print(f"batch_state:{batch_state}")
+		# 张量的list变量
+		# batch_rews = torch.tensor(batch_rews, dtype=torch.float32, device=device).reshape(total_len, 1)
+		#print(f"batch_rews.dim() > 1 ? : {batch_rews.dim() > 1}")
+		#_ = input()
+		# ========计算一整个batch的GAE========
+		with torch.no_grad(): # 确保 values 和 next_values 的计算不会构建计算图，避免后续反向传播冲突。
+			values = self.critic(batch_state).squeeze()
+			next_values = self.critic(batch_next_state).squeeze()
+		#print(f"values shape:{values.shape}")
+		batch_advantages, _ = self.compute_gae(batch_rews, values, next_values, batch_dones)
+		#print(f"batch_advatages req grad?:{batch_advantages.requires_grad}") 经验证这里已经为false
+		# =======================
+		
+		# ===============================================
+
+
+		# collect data for debug purpose
+		#_, cumulative_tard, _, _, _ = spf.job_creator.tardiness_output()
+		#self.tard.append(cumulative_tard[-1])
 		if DEBUG_MODE == 1:
 			print("===============collect_trajectories() completed================")
+		return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs
 
-	def compute_returns(self, rewards, next_obs):
-		"""计算n-step回报"""
-		if DEBUG_MODE == 1:
-			print("===============Into compute_returns()================")
-		returns = torch.zeros_like(rewards)
-		R = 0
-		for t in reversed(range(len(rewards))):
-			R = rewards[t] + self.gamma * R
-			returns[t] = R
-		if DEBUG_MODE == 1:
-			print("===============compute_returns() completed================")
-		return returns
-	
-	'''	def update(self):
-		if DEBUG_MODE == 1:
-			print("===============Into update()================")
-		"""使用全经验池数据进行mini-batch更新"""
-		if len(self.buffer) < self.minibatch_size:
-			return
-		
-		# 获取所有经验数据
-		batch = self.buffer.sample_batch(self.minibatch_size)
-		obs = batch['states']
-		actions = batch['actions']
-		rewards = batch['rewards']
-		next_obs = batch['next_states']
-		old_log_probs = batch['log_probs']
+	def compute_rtgs(self, batch_rews): # rewards to go 返回的rtgs为tensor
+		batch_rtgs = []
 
-		# 检查张量所处设备
-		if DEBUG_MODE == 1:
-			print(f"sequencing_brain->update->obs device: {obs.device}")
-			print(f"sequencing_brain->update->actions device: {actions.device}")
-			print(f"sequencing_brain->update->rewards device: {rewards.device}")
-			print(f"sequencing_brain->update->next_obs device: {next_obs.device}")
-			print(f"sequencing_brain->update->old_log_probs device: {old_log_probs.device}")
-		
-		# 计算回报（不需要梯度）
-		with torch.no_grad():
-			returns = self.compute_returns(rewards, next_obs)
-			returns = returns.squeeze(-1)  # 去掉最后一个维度
-		# 多轮更新
-		for _ in range(self.n_updates_per_iteration):
-			# --- 1. 先更新Critic ---
-			# 计算当前critic的values（需要梯度）
-			values = self.critic(obs).squeeze()
+		# Iterate through each episode
+		for ep_rews in reversed(batch_rews):
+
+			discounted_reward = 0 # The discounted reward so far
+
+			# Iterate through all rewards in the episode. We go backwards for smoother calculation of each
+			# discounted return (think about why it would be harder starting from the beginning)
+			for rew in reversed(ep_rews):
+				discounted_reward = rew + discounted_reward * self.gamma
+				batch_rtgs.insert(0, discounted_reward)
 			
-			# Critic损失
-			critic_loss = F.mse_loss(values, returns)
-			
-			# Critic反向传播
-			self.critic_optim.zero_grad()
-			critic_loss.backward()
-			self.critic_optim.step()
-			
-			# --- 2. 再更新Actor ---
-			# 重新计算values（不需要梯度）
-			with torch.no_grad():
-				values = self.critic(obs).squeeze()
-				advantages = returns - values
-			
-			# 标准化优势
-			advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-			
-			# 计算新策略的对数概率
-			new_log_probs = self.actor.get_log_prob(obs, actions)
-			ratios = torch.exp(new_log_probs - old_log_probs)
-			
-			# PPO损失
-			surr1 = ratios * advantages
-			surr2 = torch.clamp(ratios, 1-self.clip_ratio, 1+self.clip_ratio) * advantages
-			actor_loss = -torch.min(surr1, surr2).mean()
-			
-			# Actor反向传播
-			self.actor_optim.zero_grad()
-			actor_loss.backward()
-			self.actor_optim.step()
-			self.actor_losses.append(actor_loss.item())
-			self.critic_losses.append(critic_loss.item())
-		if DEBUG_MODE == 1:
-			print("===============update() completed ================")'''
+			self.ep_rtgs.append(discounted_reward) #其实直接记录有问题，因为这里是for reversed
+
+		# Convert the rewards-to-go into a tensor
+		batch_rtgs = torch.tensor(batch_rtgs, dtype=torch.float, device=device)
+
+		return batch_rtgs
 	
-	def compute_gae(self, rewards, values, next_values, dones=None):
+	def evaluate(self, batch_obs, batch_acts):
+		# Query critic network for a value V for each batch_obs. Shape of V should be same as batch_rtgs
+		#print(f"type of batch_obs:{type(batch_obs)}")
+		#_ = input()
+		V = self.critic(batch_obs).squeeze() # 报错
+
+		# Calculate the log probabilities of batch actions using most recent actor network.
+		# This segment of code is similar to that in get_action()
+		# batch_obs shape: [batch_len, 1, self.input_size], batch_acts shape: [batch_len, 1]
+		log_probs = self.actor.get_log_prob(batch_obs, batch_acts)
+		#print(f"log_probs shape before:{log_probs.shape}, content:{log_probs}")
+		#log_probs = log_probs.reshape(len(log_probs), 1)
+		#print(f"log_probs shape after:{log_probs.shape}, content:{log_probs}")
+		#_ = input()
+		#log_probs2 = []
+		#for obs, act in zip(batch_obs, batch_acts):
+			#log_prob2 = self.actor.get_log_prob(obs.reshape(1, 1, self.input_size), act)
+			#log_probs2.append(log_prob2)
+		#log_probs2 = torch.tensor(log_probs2, device=device)
+		#print(f"log_probs2={log_probs2}, log_probs={log_probs}")
+
+		# Return the value vector V of each observation in the batch
+		# and log probabilities log_probs of each action in the batch
+		return V, log_probs
+
+	def compute_gae(self, batch_rews, values, next_values, dones):
 		if DEBUG_MODE == 1:
 			print("===============Into compute_gae()================")
 		"""计算广义优势估计(GAE)
@@ -232,6 +287,13 @@ class Sequencing_brain:
 		"""
 
 		# rewards, values, next_values都已经在GPU上
+		rewards = []
+		# Iterate through each episode
+		for ep_rews in reversed(batch_rews):
+			for rew in reversed(ep_rews):
+				rewards.insert(0, rew)
+		# Convert the rewards into a tensor
+		rewards = torch.tensor(rewards, dtype=torch.float, device=device)
 		# 确保输入是一维的
 		rewards = rewards.squeeze(-1) if rewards.dim() > 1 else rewards
 		values = values.squeeze(-1) if values.dim() > 1 else values
@@ -243,21 +305,13 @@ class Sequencing_brain:
 			print(f"values device: {values.device}")
 			print(f"next_values device: {next_values.device}")
 
-		if dones is None:
-			dones = torch.zeros_like(rewards) # zeros_like会继承rewards张量设备
-		else:
-			dones = dones.squeeze(-1) if dones.dim() > 1 else dones
-		
-		if DEBUG_MODE == 1:
-			print(f"dones device: {dones.device}")
-
 		advantages = torch.zeros_like(rewards, device=device) # 在GPU上创建advantages
 		gae = 0
 		
 		# 反向计算
 		for t in reversed(range(len(rewards))):
 			if t == len(rewards) - 1:
-				next_non_terminal = 1.0 - dones[t]
+				next_non_terminal = 1.0 - dones[t]	#若dones为bool tensor，注意改为dones[t].float
 				next_value = next_values[t]
 			else:
 				next_non_terminal = 1.0 - dones[t]
@@ -281,75 +335,6 @@ class Sequencing_brain:
 		
 		return advantages, returns
 	
-	def update_with_gae(self):
-		"""使用GAE进行mini-batch更新"""
-		if DEBUG_MODE == 1:
-			print("===============Into update_with_gae()================")
-		if len(self.buffer) == 0: # 如果buffer为空
-			return
-
-		# 获取所有经验数据
-		batch = self.buffer.sample_batch(self.minibatch_size)
-		obs = batch['states']
-		actions = batch['actions']
-		rewards = batch['rewards']
-		next_obs = batch['next_states']
-		old_log_probs = batch['log_probs']
-
-		# 检查经验数据所在设备
-		if DEBUG_MODE == 1:
-			print(f"obs device: {obs.device}")
-			print(f"actions device: {actions.device}")
-			print(f"rewards device: {rewards.device}")
-			print(f"next_obs device: {next_obs.device}")
-			print(f"old_log_probs device: {old_log_probs.device}")
-
-		# 计算GAE（不需要梯度）
-		with torch.no_grad():
-			values = self.critic(obs).squeeze()
-			next_values = self.critic(next_obs).squeeze()
-			advantages, returns = self.compute_gae(rewards, values, next_values)
-		
-		# 多轮更新
-		for _ in range(self.n_updates_per_iteration):
-			# --- 1. 更新Critic ---
-			# 计算当前critic的values（需要梯度）
-			values = self.critic(obs).squeeze(-1)
-			returns = returns.squeeze(-1)  # 去掉最后一个维度
-			# Critic损失
-			critic_loss = F.mse_loss(values, returns)
-			
-			# Critic反向传播
-			self.critic_optim.zero_grad()
-			critic_loss.backward()
-			self.critic_optim.step()
-			
-			# --- 2. 更新Actor ---
-			# 重新计算values（不需要梯度）
-			with torch.no_grad():
-				values = self.critic(obs).squeeze()
-			
-			# 计算新策略的对数概率
-			new_log_probs = self.actor.get_log_prob(obs, actions)
-			ratios = torch.exp(new_log_probs - old_log_probs)
-			
-			# PPO损失
-			surr1 = ratios * advantages
-			surr2 = torch.clamp(ratios, 1-self.clip_ratio, 1+self.clip_ratio) * advantages
-			actor_loss = -torch.min(surr1, surr2).mean()
-			
-			# Actor反向传播
-			self.actor_optim.zero_grad()
-			actor_loss.backward()
-			self.actor_optim.step()
-			
-			self.actor_losses.append(actor_loss.item())
-			self.critic_losses.append(critic_loss.item())
-			print(f"actor_loss:{actor_loss}, critic_loss:{critic_loss}")
-		if DEBUG_MODE == 1:
-			print("===============update_with_gae() completed================")
-
-	
 	def train(self, total_episodes):
 		if DEBUG_MODE == 1:
 			print("===============Into train()================")
@@ -357,13 +342,42 @@ class Sequencing_brain:
 		episode = 0
 		while episode < total_episodes:
 			start_time = time.time()
-			# 1. 收集新轨迹并更新经验池
-			# 收集新数据
-			self.collect_trajectories(n_trajectories = self.n_trajectories) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
-			
+			# 1. 收集新轨迹，不再使用经验池模式，改为返回batch data
+			# batch data为n_trajectories条完整轨迹的数据
+			batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs = self.collect_trajectories(n_trajectories = self.n_trajectories) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
+			print(f"batch_rtgs:{batch_rtgs[0].item()}")
+			#_ = input()
+			#V, batch_log_probs = self.evaluate(batch_state, batch_acts)
+			#V, _ = self.evaluate(batch_state, batch_acts)
+			# A_k = batch_rtgs - V.detach()
+			# batch_advantages shape [batch_len]
+			A_k = batch_advantages
+			# A_k = (A_k - A_k.mean()) / A_k.std() + 1e-10
 			# 2. 更新策略
-			# self.update()
-			self.update_with_gae() #注意minibatchsize就是一个batch会需要多少条完整traj，如果step1中buffer存储的轨迹数量n<minibatchsize,会导致无法更新
+			for _ in range(self.n_updates_per_iteration):
+				# print(f"batch_log_probs:{batch_log_probs}")
+				V, curr_log_probs = self.evaluate(batch_state, batch_acts)
+				# print("V.shape=",V.shape)
+				ratios = torch.exp(curr_log_probs - batch_log_probs)
+				# print(f"ratios={ratios}")
+				surr1 = ratios * A_k
+				# print(f"surr1={surr1}")
+				surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * A_k
+				# print(f"surr2={surr2}")
+				#_=input()
+				actor_loss = (-torch.min(surr1, surr2)).mean()
+				#print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
+				critic_loss = nn.MSELoss()(V, batch_rtgs)
+				print(f"actor_loss = {actor_loss}")
+				print(f"critic_loss = {critic_loss}")
+				self.actor_losses.append(actor_loss.item())
+				self.critic_losses.append(critic_loss.item())
+				self.actor_optim.zero_grad()
+				actor_loss.backward(retain_graph=True)
+				self.actor_optim.step()
+				self.critic_optim.zero_grad()
+				critic_loss.backward()
+				self.critic_optim.step()
 			end_time = time.time()
 			print(f"Episode {episode+1}/{total_episodes} took {end_time - start_time:.2f} seconds")
 			if episode % self.save_freq == 0:
@@ -372,20 +386,23 @@ class Sequencing_brain:
 				self.save_model(self.address_seed)
 			episode += 1
 
-			#3. 对每一集清空经验池，也可以放在第一步前做
-			self.buffer = PPOTrajectoryBuffer(self.buffer_size, self.input_size)
 		if DEBUG_MODE == 1:
 			print("===============train() completed================")
 
-	def save_model(self, save_dir):
-		"""保存Actor和Critic模型"""
-		if not os.path.exists(save_dir):
-			os.makedirs(save_dir)
-		"""保存模型参数"""
-		torch.save(self.actor.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_actor.pt"))
-		torch.save(self.critic.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_critic.pt"))
+	def get_action(self, obs):
+		action_cate_logits = self.actor(obs)
+		dist_cate = torch.distributions.Categorical(logits=action_cate_logits)
+		action_cate = dist_cate.sample()
+		#print(f"action DRL returns Categorical action:{a_t_cate}")
+		log_prob_cate = dist_cate.log_prob(action_cate)
+		#print(f"obs shape:{obs.shape},action cate shape:{action_cate.shape}")
+		#_ = input()
+		#log_prob_cate2 = self.actor.get_log_prob(obs, action_cate)
+		#print(f"log_prob_cate={log_prob_cate}, with log_prob_cate2 calculated by get_log_prob={log_prob_cate2}")
+		# 算出来是一致的
+		return action_cate.detach(), log_prob_cate.detach()
 
-	def action_DRL(self, sqc_data):
+	def action_DRL(self, sqc_data):	# 询问actor网络并获取策略
 		if DEBUG_MODE == 1:
 			print("===============Into action_DRL()================")
 		
@@ -403,25 +420,32 @@ class Sequencing_brain:
 		# 使用 actor 网络生成动作分布
 		with torch.no_grad():
 			# actor 网络输出均值 (假设网络直接输出均值)
-			action_mean = self.actor.forward(state_tensor)
-			
+			#action_mult_mean = self.actor(state_tensor)
 			# 创建动作分布 (假设协方差矩阵是固定的或由另一网络输出)
-			dist = MultivariateNormal(action_mean, self.cov_mat)
-			
+			#dist_mult = MultivariateNormal(action_mult_mean, self.cov_mat)
 			# 采样动作
-			action = dist.sample()
-			log_prob = dist.log_prob(action)
+			#action_mult = dist_mult.sample()
+			#a_t = torch.argmax(action_mult).item()
+			#print(f"action DRL returns MultivariateNormal action:{a_t}")
+			#_ = input()
+			#log_prob = dist_mult.log_prob(action_mult)
+			action_cate, log_prob_cate = self.get_action(state_tensor)
+			a_t_cate = action_cate.item()
+			#print(f"action DRL returns Categorical action:{a_t_cate}")
+			#log_prob_cate2 = self.actor.get_log_prob(state_tensor, action_cate)
+			#print(f"log_prob_cate:{log_prob_cate}, log_prob_cate2(using get_log_prob):{log_prob_cate2}")
+			#log_prob_cate = log_prob_cate2
 			if DEBUG_MODE == 1:
 				print("===============actor net action sampled================")
 		
 		# 使用 actor 网络选择的动作 (转换为离散动作)
-		a_t = torch.argmax(action).item()  # 假设动作空间是离散的
+		#a_t = torch.argmax(action_mult).item()  # 假设动作空间是离散的
 		
 		# the decision is made by one of the available sequencing rule
-		job_position = self.func_list[a_t](sqc_data)
+		job_position = self.func_list[a_t_cate](sqc_data)
 		j_idx = sqc_data[-2][job_position]
 		# 记录经验 (包括 log_prob 用于 PPO 更新)
-		self.build_experience(j_idx, m_idx, s_t, a_t,  log_prob=log_prob)
+		self.build_experience(j_idx, m_idx, s_t, a_t_cate,  log_prob=log_prob_cate)
 
 		if DEBUG_MODE == 1:
 			print("===============action_DRL() completed================")
@@ -508,41 +532,38 @@ class Sequencing_brain:
 	# add the experience to job creator's incomplete experiece memory
 	def build_experience(self,j_idx,m_idx,s_t,a_t, log_prob):
 		self.job_creator.incomplete_rep_memo[m_idx][self.env.now] = [s_t, a_t, log_prob]
+		#print(f"self.env.now:[{self.env.now}],s_t:[{s_t}],a_t:[{a_t}]")
+		#_ = input()
 		# print(f"job {j_idx} on machine {m_idx} at time {self.env.now} has been added to the experience memory")
 	
 	def _init_hyperparameters(self, hyperparameters):
+		self.timespan = 1000
+		self.timesteps_per_batch = 2048
+		self.gamma = 0.95
 		self.n_updates_per_iteration = 5
 		self.lr = 0.005
-		self.gamma = 0.95
-		self.timespan = 1000
+		self.clip_ratio = 0.2
 		self.input_size = 25
 
 		# Change any default values to custom values for specified hyperparameters
 		for param, val in hyperparameters.items():
 			exec('self.' + param + ' = ' + str(val))
-
-
-'''
-if __name__ == '__main__':
-
-	total_episode = 1
-	span = 1000
-
-	m = [6,12,24]
-	wc = [3, 4, 6]
-	# lst = [2 for _ in range(3)]
-	length_list = [[2, 2, 2],[3, 3, 3, 3],[4, 4, 4, 4, 4, 4]]
-	tightness = [0.6, 1.0, 1.6]
-	add_job = [50,200]
-
-	for i in range(len(tightness)):
-		for j in range(len(length_list)):
-			for k in range(len(add_job)):
-				if i == 1 and j == 1 and k == 1:
-					sequencing_brain = Sequencing_brain(span= span, m = m[i], wc = wc[i], length_list = length_list[i], tightness = tightness[j], add_job = add_job[k])
-					sequencing_brain.train(total_steps = total_episode)
-					# print(sequencing_brain.tard)    
-					#plot_loss(sequencing_brain.tard)
-					#plot_loss(sequencing_brain.actor_losses)
-					#plot_loss(sequencing_brain.critic_losses)
-'''
+			'''hyperparameters = {
+				'timespan': 1000,
+				'timesteps_per_batch': 2048, 
+				'max_timesteps_per_episode': 200, 
+				'gamma': 0.99, 
+				'n_updates_per_iteration': 10,
+				'lr': 3e-4, 
+				'clip_ratio': 0.2,
+				'input_size': 25
+			  }'''
+	
+	def save_model(self, save_dir):
+		"""保存Actor和Critic模型"""
+		if not os.path.exists(save_dir):
+			os.makedirs(save_dir)
+		"""保存模型参数"""
+		print(f"Saving model to {self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo.pt")
+		torch.save(self.actor.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_actor.pt"))
+		torch.save(self.critic.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_critic.pt"))

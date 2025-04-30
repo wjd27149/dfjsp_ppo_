@@ -22,6 +22,9 @@ def get_args():
 	parser.add_argument('--actor_model', dest='actor_model', type=str, default='')     # your actor model filename
 	parser.add_argument('--critic_model', dest='critic_model', type=str, default='')   # your critic model filename
 
+	parser.add_argument('--i_now', dest='i_now', type=int, default= 2)   
+	parser.add_argument('--j_now', dest='j_now', type=int, default= 2)   
+	parser.add_argument('--k_now', dest='k_now', type=int, default= 1)   
 	args = parser.parse_args()
 
 	return args

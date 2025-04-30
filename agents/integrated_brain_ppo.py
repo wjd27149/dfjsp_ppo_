@@ -1,0 +1,604 @@
+import numpy as np
+import sys
+import multiprocessing as mp
+from multiprocessing import Pool,Queue,Process
+
+
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+
+import sequencing
+import os
+
+from networks.ppo_network import ppo_network,ActorNetwork, CriticNetwork
+# from utils.ppo_buffer import PPOTrajectoryBuffer
+from utils.shop_floor import shopfloor
+from utils.record_output import plot_loss, plot_tard
+from utils.chart import generate_gannt_chart
+
+import time
+
+import simpy
+from torch.distributions import MultivariateNormal
+
+#1. Init CUDA
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+OBSERVE_CUDA = 0 # 1观察内存信息
+
+# GPU性能信息：
+# sequecing_brain_ppo 在__init__中将actor网络和critic网络移动到GPU上，调用了两次to(device)
+# 项目工程中例如PPOBuffer中的其他张量都尽可能在GPU上创建了
+
+#1 = ENABLE, 0 = DISABLED
+DEBUG_MODE = 0
+
+class Integrated_brain:
+    def __init__(self, m, wc, length_list, tightness, add_job, **hyperparameters):
+        self.m = m
+        self.wc = wc
+        self.length_list = length_list
+        self.tightness = tightness
+        self.add_job = add_job
+        # 1. Init hyperpara
+        self._init_hyperparameters(hyperparameters)
+
+        # 2. Init Multi-Channel
+        self.SA_bulid_state = self.state_multi_channel
+        self.RA_build_state = self.state_deeper      
+
+        # SA func_list
+        self.func_list = [sequencing.SPT,sequencing.WINQ,sequencing.MS,sequencing.CR]
+        # action space, consists of all selectable rules
+
+        self.SA_input_size = 25
+        self.SA_output_size = len(self.func_list)
+        self.RA_input_size = int(m/wc) * 3 + 3
+        self.RA_output_size = int(m / wc)
+        
+        # specify new address seed for storing the trained parameters
+        self.SA_address_seed = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'integared_ppo_models','SA')
+        self.RA_address_seed = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'integared_ppo_models','RA')
+
+        # Initialize actor and critic networks
+        self.SA_actor = ActorNetwork(self.SA_input_size, self.SA_output_size).to(device)                                                   # ALG STEP 1
+        self.SA_critic = CriticNetwork(self.SA_input_size, 1).to(device)
+        self.RA_actor = ActorNetwork(self.RA_input_size, self.RA_output_size).to(device)                                                   # ALG STEP 1
+        self.RA_critic = CriticNetwork(self.RA_input_size, 1).to(device)
+
+        # actor, critic网络已经移动到GPU上后，才可以建立optim
+        self.SA_actor_optim = optim.Adam(self.SA_actor.parameters(), lr=self.lr)                                                   # ALG STEP 2
+        self.SA_critic_optim = optim.Adam(self.SA_critic.parameters(), lr=self.lr)                                                   # ALG STEP 2
+        self.RA_actor_optim = optim.Adam(self.RA_actor.parameters(), lr=self.lr)                                                   # ALG STEP 2
+        self.RA_critic_optim = optim.Adam(self.RA_critic.parameters(), lr=self.lr)                                                   # ALG STEP 2
+
+        # Initialize the covariance matrix used to query the actor for actions
+        self.SA_cov_var = torch.full(size=(self.SA_output_size,), fill_value=0.5, device=device) # 从to_device 形式变更为直接在GPU上创建
+        self.SA_cov_mat = torch.diag(self.SA_cov_var) #to device 是不必要的，将会在GPU上创建，可能是因为跟随cov_var
+        self.RA_cov_var = torch.full(size=(self.RA_output_size,), fill_value=0.5, device=device) 
+        self.RA_cov_mat = torch.diag(self.RA_cov_var) 
+
+        self.gae_lambda = 0.95                  # Lambda for GAE
+        self.save_freq = 10                            # How often we save in number of iterations
+        self.n_trajectories = 10					# 每次rollout模拟10次环境
+
+        # below are data used for debug
+        self.tard = []
+        if DEBUG_MODE == 1:
+            print("===========BrainPPO Init Done==============")
+
+    # 用来重置模拟环境
+    def reset(self, job_creator, wc_list, m_list, env):
+        if DEBUG_MODE == 1:
+            print("===============Into reset()=================")
+        # initialize the environment and the workcenter to be controlled
+        self.env = env
+        self.job_creator = job_creator
+        self.wc_list = wc_list
+        self.m_list = m_list
+        self.m_no = len(self.m_list)
+
+        self.job_creator.build_sqc_experience_repository(self.m_list)
+
+        for m in self.m_list:
+            m.routing_learning_event.succeed()
+            m.sequencing_learning_event.succeed()
+            m.job_sequencing = self.SA_action_DRL
+            m.reward_function = m.get_reward13
+            m.build_state = self.SA_bulid_state
+
+        for wc in self.wc_list:
+            wc.job_routing = self.RA_action_DRL
+            wc.build_state = self.RA_build_state
+
+        if DEBUG_MODE == 1:
+            print("===============reset() complted===============")
+
+    def worker(self):
+        # create the shop floor instance
+        env = simpy.Environment()
+        spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+
+        self.reset(spf.job_creator, spf.wc_list, spf.m_list, env=env)
+        env.run()
+        SA_total_traj = spf.job_creator.rep_memo_ppo
+        RA_total_traj = spf.job_creator.RA_rep_memo_ppo
+        _, cumulative_tard, _, _, _ = spf.job_creator.tardiness_output()
+        self.tard.append(cumulative_tard[-1])
+        return  RA_total_traj, SA_total_traj
+
+    def compute_rtgs(self, batch_rews): # rewards to go 返回的rtgs为tensor
+        batch_rtgs = []
+		# Iterate through each episode
+        for ep_rews in reversed(batch_rews):
+            discounted_reward = 0 # The discounted reward so far
+			# Iterate through all rewards in the episode. We go backwards for smoother calculation of each
+			# discounted return (think about why it would be harder starting from the beginning)
+            for rew in reversed(ep_rews):
+                discounted_reward = rew + discounted_reward * self.gamma
+                batch_rtgs.insert(0, discounted_reward)
+		# Convert the rewards-to-go into a tensor
+        batch_rtgs = torch.tensor(batch_rtgs, dtype=torch.float, device=device)
+        return batch_rtgs
+
+    def collect_trajectories(self, n_trajectories, total_traj_, input_size, critic_network): # equal to rollout()
+        """收集新轨迹并更新经验池"""
+        # state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量
+        batch_state =[]	#
+        batch_acts = []
+        batch_log_probs = []	#
+        batch_next_state = []	#
+        batch_rews = []
+        batch_rtgs = []
+        batch_lens = []
+        batch_dones = []  # 新增：记录终止标志
+        batch_values = []  # 新增：记录状态价值 V(s)
+        batch_advantages = []  # 新增：存储 GAE 优势值
+
+        ep_rews = []
+        ep_dones = []
+        total_len = 0
+        if DEBUG_MODE == 1:
+            print("===============Into collect_trajectories()================")
+        #_ = input()
+        for n in range(n_trajectories):
+            ep_rews = []
+            # create the shop floor instance
+            #env = simpy.Environment()
+            #spf = shopfloor(env, self.timespan, self.m, self.wc, self.length_list, self.tightness, self.add_job)
+
+            #self.reset(spf.job_creator, spf.m_list, env=env)
+            #env.run()
+            if OBSERVE_CUDA == 1:
+                print(f"Allocated Memory: {torch.cuda.memory_allocated() / 1024 / 1024} MBs") #观察显存占用情况
+                print(f"Cached Memory: {torch.cuda.memory_reserved() / 1024 /1024} MBs")
+
+            # generate_gannt_chart(spf.job_creator.production_record, spf.m_list) # 画图                     
+
+            #Collect the trajectory data from the job creator
+            #total_traj = spf.job_creator.rep_memo_ppo #一条完整轨迹
+            start_time = time.time()
+            total_traj = total_traj_
+            end_time = time.time()
+            # print(f"{n} env sample took {end_time - start_time:.2f} seconds")
+            
+            #total_traj = total_trajs[n].get()
+            
+            if not total_traj or len(total_traj) < 1:
+                print("[ERROR] total_traj len < 0 or empty.")
+                return
+            # print("length of total_trajectory: ", len(total_traj)) #检查一整条traj的长度
+            total_len += len(total_traj) #计算累计长度，即n条轨迹加起来的总长
+            # print("total_len now : ", total_len)
+
+            for idx, step in enumerate(total_traj):
+                #print(f"step={step}")
+                #_ = input()
+                if len(step) != 5:
+                    raise ValueError(f"Each step should contain 5 elements, but got {len(step)}")
+                state, action, log_prob, next_state, reward = step
+                # state, next_state, log_prob已经是GPU（device）上的张量, action和reward本身是标量, 但会在下面的sample_batch()中被统一为张量形式
+                batch_state.append(state)
+                batch_acts.append(action)
+                batch_log_probs.append(log_prob)
+                #print(f"step log_prob:{log_prob}, log_prob2:{self.actor.get_log_prob(state.reshape(1, 1, self.input_size), torch.tensor(action,device=device))}")
+                #经验证上面两个log_prob是对得上号的
+                batch_next_state.append(next_state)
+                ep_rews.append(reward)
+                done = 1 if (idx == len(total_traj)-1) else 0 #轨迹最后一步停止
+                ep_dones.append(done)
+            # =========================================================================
+
+            ep_t = len(total_traj) #一整条完整轨迹的长度就是当前episode总共用掉的timesteps
+
+            batch_lens.append(ep_t + 1)
+            batch_rews.append(ep_rews)
+            batch_dones.extend(ep_dones)
+        # ========== for _ in range(n_trajectories) ends here================
+
+        batch_state = torch.stack(batch_state).reshape(total_len, 1, input_size)
+        batch_next_state = torch.stack(batch_next_state).reshape(total_len, 1, input_size)
+        batch_acts = torch.tensor(batch_acts, dtype=torch.long, device=device).reshape(total_len, 1)
+        batch_log_probs = torch.stack(batch_log_probs).reshape(total_len)
+        batch_rtgs = self.compute_rtgs(batch_rews).reshape(total_len)
+        #print("batch_state shape:", batch_state.shape) # batch_rews是包含若干ep_rews
+        #_ = input()
+        #print(f"batch_state:{batch_state}")
+        # 张量的list变量
+        # batch_rews = torch.tensor(batch_rews, dtype=torch.float32, device=device).reshape(total_len, 1)
+        #print(f"batch_rews.dim() > 1 ? : {batch_rews.dim() > 1}")
+        #_ = input()
+        # ========计算一整个batch的GAE========
+        with torch.no_grad(): # 确保 values 和 next_values 的计算不会构建计算图，避免后续反向传播冲突。
+            values = critic_network(batch_state).squeeze()
+            next_values = critic_network(batch_next_state).squeeze()
+        #print(f"values shape:{values.shape}")
+        batch_advantages, _ = self.compute_gae(batch_rews, values, next_values, batch_dones)
+        batch_rtgs, _ = self.compute_rtgs()
+        #print(f"batch_advatages req grad?:{batch_advantages.requires_grad}") 经验证这里已经为false
+        if DEBUG_MODE == 1:
+            print("===============collect_trajectories() completed================")
+        return batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs
+
+    
+    def evaluate(self, batch_obs, batch_acts, critic_network, actor_network):
+        # Query critic network for a value V for each batch_obs. Shape of V should be same as batch_rtgs
+        V = critic_network(batch_obs).squeeze() # 报错
+        log_probs = actor_network.get_log_prob(batch_obs, batch_acts)
+        return V, log_probs
+
+    def compute_gae(self, batch_rews, values, next_values, dones):
+        if DEBUG_MODE == 1:
+            print("===============Into compute_gae()================")
+        """计算广义优势估计(GAE)
+        
+        Args:
+            rewards: 形状[batch_size]或[batch_size, 1]的张量
+            values: 形状与rewards相同的当前状态价值估计
+            next_values: 形状与rewards相同的下一状态价值估计
+            dones: 可选 终止标志 形状与rewards相同
+            
+        Returns:
+            advantages: 形状与输入相同的优势值
+            returns: 形状与输入相同的回报值
+        """
+
+        # rewards, values, next_values都已经在GPU上
+        rewards = []
+        # Iterate through each episode
+        for ep_rews in reversed(batch_rews):
+            for rew in reversed(ep_rews):
+                rewards.insert(0, rew)
+        # Convert the rewards into a tensor
+        rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+        # 确保输入是一维的
+        rewards = rewards.squeeze(-1) if rewards.dim() > 1 else rewards
+        values = values.squeeze(-1) if values.dim() > 1 else values
+        next_values = next_values.squeeze(-1) if next_values.dim() > 1 else next_values
+        
+        # 检查这几个张量的设备
+        if DEBUG_MODE == 1:
+            print(f"rewards device: {rewards.device}")
+            print(f"values device: {values.device}")
+            print(f"next_values device: {next_values.device}")
+
+        advantages = torch.zeros_like(rewards, device=device) # 在GPU上创建advantages
+        gae = 0
+        
+        # 反向计算
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                next_non_terminal = 1.0 - dones[t]	#若dones为bool tensor，注意改为dones[t].float
+                next_value = next_values[t]
+            else:
+                next_non_terminal = 1.0 - dones[t]
+                next_value = values[t+1]
+            
+            delta = rewards[t] + self.gamma * next_value * next_non_terminal - values[t]
+            gae = delta + self.gamma * self.gae_lambda * next_non_terminal * gae
+            advantages[t] = gae
+        
+        # 标准化优势
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        if DEBUG_MODE == 1:
+            print(f"advantages device: {advantages.device}")
+            print(f"values device: {values.device}")
+        
+        returns = advantages + values
+
+        if DEBUG_MODE == 1:
+            print("===============compute_gae() completed================")
+        
+        return advantages, returns
+    
+    def train(self, total_episodes):
+        if DEBUG_MODE == 1:
+            print("===============Into train()================")
+        """训练循环"""
+        episode = 0
+        while episode < total_episodes:
+            start_time = time.time()
+            # 1. 收集新轨迹，不再使用经验池模式，改为返回batch data
+            # batch data为n_trajectories条完整轨迹的数据
+            RA_total_traj, SA_total_traj = self.worker() # 运行worker函数，返回SA和RA的轨迹数据
+
+            for traj, size, address, critic_network, actor_network, critic_optim, actor_optim in \
+                zip([RA_total_traj, SA_total_traj], [self.RA_input_size, self.SA_input_size], [self.RA_address_seed, self.SA_address_seed],\
+                    [self.RA_critic, self.SA_critic], [self.RA_actor, self.SA_actor],[self.RA_critic_optim, self.SA_critic_optim],[self.RA_actor_optim, self.SA_actor_optim]):
+
+                batch_state, batch_acts, batch_log_probs, batch_advantages, batch_rtgs = self.collect_trajectories(n_trajectories = self.n_trajectories, total_traj_= traj, input_size= size, critic_network= critic_network) # 运行n_trajectories次模拟并获得n条完整轨迹存放在buffer中
+                #V, batch_log_probs = self.evaluate(batch_state, batch_acts)
+                #V, _ = self.evaluate(batch_state, batch_acts)
+                # A_k = batch_rtgs - V.detach()
+                # batch_advantages shape [batch_len]
+                A_k = batch_advantages
+                # A_k = (A_k - A_k.mean()) / A_k.std() + 1e-10
+                # 2. 更新策略
+                for _ in range(self.n_updates_per_iteration):
+                    # print(f"batch_log_probs:{batch_log_probs}")
+                    V, curr_log_probs = self.evaluate(batch_state, batch_acts, actor_network=actor_network, critic_network=critic_network)
+                    # print("V.shape=",V.shape)
+                    ratios = torch.exp(curr_log_probs - batch_log_probs)
+                    # print(f"ratios={ratios}")
+                    surr1 = ratios * A_k
+                    # print(f"surr1={surr1}")
+                    surr2 = torch.clamp(ratios, 1 - self.clip_ratio, 1 + self.clip_ratio) * A_k
+                    # print(f"surr2={surr2}")
+                    #_=input()
+                    actor_loss = (-torch.min(surr1, surr2)).mean()
+                    #print(f"V shape:{V.shape}, batch_rtgs shape:{batch_rtgs.shape}")
+                    #critic_loss = nn.MSELoss()(V, batch_advantages)
+                    critic_loss = nn.MSELoss()(V, batch_rtgs)
+                    # print(f"actor_loss = {actor_loss}")
+                    # print(f"critic_loss = {critic_loss}")
+                    actor_optim.zero_grad()
+                    actor_loss.backward(retain_graph=True)
+                    actor_optim.step()
+                    critic_optim.zero_grad()
+                    critic_loss.backward()
+                    critic_optim.step()
+                end_time = time.time()
+                print(f"Episode {episode+1}/{total_episodes} took {end_time - start_time:.2f} seconds")
+                if episode % self.save_freq == 0:
+                    # 保存模型
+                    print(f"Saving model at step {episode}")
+                    self.save_model(address,actor_model= actor_network, critic_model= critic_network)
+            episode += 1
+
+        if DEBUG_MODE == 1:
+            print("===============train() completed================")
+
+    def SA_get_action(self, obs):
+        action_cate_logits = self.SA_actor(obs)
+        dist_cate = torch.distributions.Categorical(logits=action_cate_logits)
+        action_cate = dist_cate.sample()
+        #print(f"action DRL returns Categorical action:{a_t_cate}")
+        log_prob_cate = dist_cate.log_prob(action_cate)
+        #print(f"obs shape:{obs.shape},action cate shape:{action_cate.shape}")
+        #_ = input()
+        #log_prob_cate2 = self.actor.get_log_prob(obs, action_cate)
+        #print(f"log_prob_cate={log_prob_cate}, with log_prob_cate2 calculated by get_log_prob={log_prob_cate2}")
+        # 算出来是一致的
+        return action_cate.detach(), log_prob_cate.detach()
+
+    def SA_action_DRL(self, sqc_data):	# 询问actor网络并获取策略
+        if DEBUG_MODE == 1:
+            print("===============Into action_DRL()================")
+        
+        m_idx = sqc_data[-1] # sqc_data为list列表, m_idx 为int
+        s_t = self.SA_bulid_state(sqc_data)    # build_state()中创建s_t张量时指定设备device
+        if DEBUG_MODE == 1:
+            print("s_t device: ", s_t.device)
+        
+        # 将状态转换为适合网络的格式
+        state_tensor = s_t.reshape([1,1,self.SA_input_size]) # shape: [1, state_dim]
+        
+        if DEBUG_MODE == 1:
+            print(f"===============the device of state_tensor is:{state_tensor.device}================")
+
+        # 使用 actor 网络生成动作分布
+        with torch.no_grad():
+            action_cate, log_prob_cate = self.SA_get_action(state_tensor)
+            a_t_cate = action_cate.item()
+            if DEBUG_MODE == 1:
+                print("===============actor net action sampled================")
+
+        
+        # the decision is made by one of the available sequencing rule
+        job_position = self.func_list[a_t_cate](sqc_data)
+        j_idx = sqc_data[-2][job_position]
+        # 记录经验 (包括 log_prob 用于 PPO 更新)
+        self.SA_build_experience(j_idx, m_idx, s_t, a_t_cate,  log_prob=log_prob_cate)
+
+        if DEBUG_MODE == 1:
+            print("===============action_DRL() completed================")
+
+        return job_position
+
+
+    def state_multi_channel(self, sqc_data):
+        if DEBUG_MODE == 1:
+            print("===============Into state_multi_channel()================")
+        # information in job number, global and local
+        in_system_job_no = self.job_creator.in_system_job_no
+        local_job_no = len(sqc_data[0])
+        # the information of coming job (currently being processed by other machines)
+        #print('coming jobs:',self.job_creator.next_wc_list, self.job_creator.arriving_job_slack_list, self.job_creator.release_time_list, sqc_data[-3])
+        arriving_jobs = np.where(self.job_creator.next_wc_list == sqc_data[-3])[0] # return the index of coming jobs
+        arriving_job_no = arriving_jobs.size  # expected arriving job number
+        if arriving_job_no: # if there're jobs coming at your workcenter
+            arriving_job_time = (self.job_creator.release_time_list[arriving_jobs] - self.env.now).mean() # average time from now when next job arrives at workcenter
+            arriving_job_slack = (self.job_creator.arriving_job_slack_list[arriving_jobs]).mean() # what's the average slack time of the arriving job
+        else:
+            arriving_job_time = 0
+            arriving_job_slack = 0
+        #print(arriving_jobs, arriving_job_no, arriving_job_time, arriving_job_slack, self.env.now, sqc_data[-3])
+        # information of progression of jobs, get from the job creator
+        global_comp_rate = self.job_creator.comp_rate
+        global_realized_tard_rate = self.job_creator.realized_tard_rate
+        global_exp_tard_rate = self.job_creator.exp_tard_rate
+        available_time = (self.job_creator.available_time_list - self.env.now).clip(0,None)
+        # get the pt of all remaining jobs in system
+        rem_pt = []
+        # need loop here because remaining_pt have different length
+        for m in self.m_list:
+            for x in m.remaining_pt_list:
+                rem_pt += x.tolist()
+        # processing time related data
+        total_time = sum(available_time)
+        pt_share = available_time[sqc_data[-1]] / total_time if total_time > 0 else 0
+
+        global_pt_CV = np.std(rem_pt) / np.mean(rem_pt)
+        # information of queuing jobs in queue
+        local_pt_sum = np.sum(sqc_data[0])
+        local_pt_mean = np.mean(sqc_data[0])
+        local_pt_min = np.min(sqc_data[0])
+        local_pt_CV = np.std(sqc_data[0]) / local_pt_mean
+        # information of queuing jobs in remaining processing time
+        local_remaining_pt_sum = np.sum(sqc_data[1])
+        local_remaining_pt_mean = np.mean(sqc_data[1])
+        local_remaining_pt_max = np.max(sqc_data[1])
+        local_remaining_pt_CV = np.std(sqc_data[1]) / local_remaining_pt_mean if local_remaining_pt_mean > 0 else 0
+        # information of WINQ
+        avlm_mean = np.mean(sqc_data[8])
+        avlm_min = np.min(sqc_data[8])
+        avlm_CV = np.std(sqc_data[8]) / avlm_mean if avlm_mean > 0 else 0
+        # time-till-due related data:
+        time_till_due = sqc_data[5]
+        realized_tard_rate = time_till_due[time_till_due<0].size / local_job_no # ratio of tardy jobs
+        ttd_sum = time_till_due.sum()
+        ttd_mean = time_till_due.mean()
+        ttd_min = time_till_due.min()
+        ttd_CV = (time_till_due.std() / ttd_mean).clip(-2,2) if ttd_mean > 0 else 0
+        # slack-related data:
+        slack = sqc_data[6]
+        exp_tard_rate = slack[slack<0].size / local_job_no # ratio of jobs expect to be tardy
+        slack_sum = slack.sum()
+        slack_mean = slack.mean()
+        slack_min = slack.min()
+        slack_CV = (slack.std() / slack_mean).clip(-2,2) if slack_mean > 0 else 0
+        # use raw data, and leave the magnitude adjustment to normalization layers
+        no_info = [in_system_job_no, arriving_job_no, local_job_no] # info in job number
+        pt_info = [local_pt_sum, local_pt_mean, local_pt_min] # info in processing time
+        remaining_pt_info = [local_remaining_pt_sum, local_remaining_pt_mean, local_remaining_pt_max, avlm_mean, avlm_min] # info in remaining processing time
+        ttd_slack_info = [ttd_mean, ttd_min, slack_mean, slack_min, arriving_job_slack] # info in time till due
+        progression = [pt_share, global_comp_rate, global_realized_tard_rate, global_exp_tard_rate] # progression info
+        heterogeneity = [global_pt_CV, local_pt_CV, ttd_CV, slack_CV, avlm_CV] # heterogeneity
+        # concatenate the data input
+        s_t = np.nan_to_num(np.concatenate([no_info, pt_info, remaining_pt_info, ttd_slack_info, progression, heterogeneity]),nan=0,posinf=1,neginf=-1)
+        # convert to tensor
+        s_t = torch.tensor(s_t, dtype=torch.float, device=device)
+        if DEBUG_MODE == 1:
+            print("===============state_multi_channel() completed================")
+        return s_t
+    
+    # add the experience to job creator's incomplete experiece memory
+    def SA_build_experience(self,j_idx,m_idx,s_t, a_t, log_prob):
+        self.job_creator.incomplete_rep_memo[m_idx][self.env.now] = [s_t, a_t, log_prob]
+        #print(f"self.env.now:[{self.env.now}],s_t:[{s_t}],a_t:[{a_t}]")
+        #_ = input()
+        # print(f"job {j_idx} on machine {m_idx} at time {self.env.now} has been added to the experience memory")
+
+    def state_deeper(self, routing_data, job_pt, ttd, job_slack, wc_idx):
+        coming_job_idx = np.where(self.job_creator.next_wc_list == wc_idx)[0]  # return the index of coming jobs
+        coming_job_no = coming_job_idx.size  # expected arriving job number
+        if coming_job_no:  # if there're jobs coming at your workcenter
+            next_job = self.job_creator.release_time_list[coming_job_idx].argmin()  # the index of next job
+            coming_job_time = (self.job_creator.release_time_list[coming_job_idx] - self.env.now)[next_job]  # time from now when next job arrives at workcenter
+            coming_job_slack = self.job_creator.arriving_job_slack_list[coming_job_idx][next_job]  # what's the average slack time of the arriving job
+        else:
+            coming_job_time = 0
+            coming_job_slack = 0
+
+        # Ensure all inputs are numpy arrays with consistent dtype  取前两个数
+        m_state = np.array([a[:2] for a in routing_data], dtype=np.float32)  # Convert to 2D array
+        job_pt = np.array([job_pt], dtype=np.float32)  # Convert to 1D array
+        job_slack = np.array([job_slack], dtype=np.float32)  # Convert to 1D array
+        coming_job_time = np.array([coming_job_time], dtype=np.float32)  # Convert to 1D array
+        coming_job_slack = np.array([coming_job_slack], dtype=np.float32)  # Convert to 1D array
+        # print("m_state:", m_state, m_state.shape, m_state.dtype)
+        # print("job_pt:", job_pt, job_pt.shape, job_pt.dtype)
+        # print("job_slack:", job_slack, job_slack.shape, job_slack.dtype)
+        # print("coming_job_time:", coming_job_time, coming_job_time.shape, coming_job_time.dtype)
+        # print("coming_job_slack:", coming_job_slack, coming_job_slack.shape, coming_job_slack.dtype)
+        # Flatten all arrays
+        m_state_flat = m_state.flatten()  # 展平为 (4,)
+        job_pt_flat = job_pt.flatten()  # 展平为 (2,)
+        job_slack_flat = job_slack.flatten()  # 展平为 (1,)
+        coming_job_time_flat = coming_job_time.flatten()  # 展平为 (1,)
+        coming_job_slack_flat = coming_job_slack.flatten()  # 展平为 (1,)
+
+        # Concatenate all arrays
+        s_t = np.concatenate([m_state_flat, job_pt_flat, job_slack_flat, coming_job_time_flat, coming_job_slack_flat])
+
+        s_t = torch.tensor(s_t, dtype=torch.float, device=device)        
+        # print(s_t, s_t.shape, s_t.dtype, s_t.numel())
+        return s_t
+    
+    def RA_build_experience(self, job_idx, s_t, a_t, log_prob, wc_idx):
+        self.wc_list[wc_idx].incomplete_experience[job_idx] = [s_t, a_t, log_prob]
+
+    def RA_get_action(self, obs):
+        action_cate_logits = self.RA_actor(obs)
+        dist_cate = torch.distributions.Categorical(logits=action_cate_logits)
+        action_cate = dist_cate.sample()
+        #print(f"action DRL returns Categorical action:{a_t_cate}")
+        log_prob_cate = dist_cate.log_prob(action_cate)
+        #print(f"obs shape:{obs.shape},action cate shape:{action_cate.shape}")
+        #_ = input()
+        #log_prob_cate2 = self.actor.get_log_prob(obs, action_cate)
+        #print(f"log_prob_cate={log_prob_cate}, with log_prob_cate2 calculated by get_log_prob={log_prob_cate2}")
+        # 算出来是一致的
+        return action_cate.detach(), log_prob_cate.detach()
+    
+    def RA_action_DRL(self, job_idx, routing_data, job_pt, ttd, job_slack, wc_idx, *args):
+        # s_t = self.build_state(routing_data, job_pt, job_slack, wc_idx)
+        s_t = self.RA_build_state(routing_data, job_pt, ttd, job_slack, wc_idx)
+        state_tensor = s_t.reshape([1,1,self.RA_input_size]) # shape: [1, state_dim]
+        # 使用 actor 网络生成动作分布
+        with torch.no_grad():
+            action_cate, log_prob_cate = self.RA_get_action(state_tensor)
+            a_t_cate = action_cate.item()
+
+        self.RA_build_experience(job_idx, s_t, a_t_cate, log_prob_cate, wc_idx)
+        return a_t_cate
+    
+    def _init_hyperparameters(self, hyperparameters):
+        self.timespan = 1000
+        self.timesteps_per_batch = 2048
+        self.gamma = 0.95
+        self.n_updates_per_iteration = 5
+        self.lr = 0.005
+        self.clip_ratio = 0.2
+
+
+        # Change any default values to custom values for specified hyperparameters
+        for param, val in hyperparameters.items():
+            exec('self.' + param + ' = ' + str(val))
+            '''hyperparameters = {
+                'timespan': 1000,
+                'timesteps_per_batch': 2048, 
+                'max_timesteps_per_episode': 200, 
+                'gamma': 0.99, 
+                'n_updates_per_iteration': 10,
+                'lr': 3e-4, 
+                'clip_ratio': 0.2,
+                'input_size': 25
+              }'''
+    
+    def save_model(self, save_dir, actor_model=None, critic_model=None):
+        """保存Actor和Critic模型"""
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        """保存模型参数"""
+        print(f"Saving model to {self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo.pt")
+        torch.save(actor_model.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_actor.pt"))
+        torch.save(critic_model.state_dict(), os.path.join(save_dir, f"{self.m}_{self.wc}_{self.tightness}_{self.add_job}_ppo_critic.pt"))
+    
+
